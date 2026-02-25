@@ -4,8 +4,14 @@ const express = require('express');
 const cors = require('cors');
 const { pool } = require('./db');
 const logger = require('./utils/logger');
+const { validateEnv } = require('./utils/validateEnv');
+const { apiAuth, feishuWebhookAuth } = require('./middleware/auth');
+const { rateLimits } = require('./middleware/rateLimit');
 const webhookRoutes = require('./routes/webhook');
 const apiRoutes = require('./routes/api');
+
+// 验证环境变量
+validateEnv();
 
 const app = express();
 const PORT = process.env.PORT || 3456;
@@ -29,9 +35,9 @@ app.get('/health', async (req, res) => {
   }
 });
 
-// Routes
-app.use('/webhook', webhookRoutes);
-app.use('/api', apiRoutes);
+// Routes with middleware
+app.use('/webhook', rateLimits.webhook, feishuWebhookAuth, webhookRoutes);
+app.use('/api', rateLimits.api, apiAuth, apiRoutes);
 
 // 404 handler
 app.use((req, res) => {

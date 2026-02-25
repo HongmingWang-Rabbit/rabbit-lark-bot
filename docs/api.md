@@ -2,6 +2,34 @@
 
 Base URL: `http://localhost:3456`
 
+## 认证
+
+API 支持两种认证方式：
+
+### 1. API Key (推荐)
+```
+X-API-Key: your_api_key
+```
+
+### 2. Bearer Token
+```
+Authorization: Bearer your_api_key
+```
+
+**注意：** 如果未配置 `API_KEY` 环境变量，API 将处于未保护状态（仅建议开发环境）。
+
+## Rate Limiting
+
+- API 接口：100 请求/分钟
+- Webhook：200 请求/分钟
+
+响应头：
+- `X-RateLimit-Limit` - 窗口内最大请求数
+- `X-RateLimit-Remaining` - 剩余请求数
+- `Retry-After` - 被限流后需等待秒数
+
+---
+
 ## 健康检查
 
 ### GET /health

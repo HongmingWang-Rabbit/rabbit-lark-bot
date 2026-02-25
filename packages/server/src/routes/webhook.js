@@ -3,6 +3,7 @@ const router = express.Router();
 const feishu = require('../feishu/client');
 const { admins } = require('../db');
 const reminderService = require('../services/reminder');
+const logger = require('../utils/logger');
 
 // 用户会话状态（内存存储，生产环境可以用 Redis）
 const userSessions = new Map();
@@ -10,7 +11,7 @@ const userSessions = new Map();
 // 飞书事件回调
 router.post('/event', async (req, res) => {
   const data = req.body;
-  console.log('Webhook event:', JSON.stringify(data, null, 2));
+  logger.debug('Webhook event received', { eventType: data.header?.event_type || data.type });
 
   // URL 验证
   if (data.type === 'url_verification') {
@@ -26,7 +27,9 @@ router.post('/event', async (req, res) => {
     if (msgType === 'text' && senderId) {
       const content = JSON.parse(event.message.content);
       // 异步处理，立即返回
-      handleUserMessage(senderId, content.text).catch(console.error);
+      handleUserMessage(senderId, content.text).catch(err => {
+        logger.error('Message handling failed', { error: err.message, userId: senderId });
+      });
     }
   }
 
@@ -35,7 +38,7 @@ router.post('/event', async (req, res) => {
 
 // 处理用户消息
 async function handleUserMessage(userId, text) {
-  console.log(`收到消息 from ${userId}: ${text}`);
+  logger.info('Message received', { userId, textLength: text.length });
   
   const isAdminUser = await admins.isAdmin(userId, null);
   const lowerText = text.toLowerCase().trim();

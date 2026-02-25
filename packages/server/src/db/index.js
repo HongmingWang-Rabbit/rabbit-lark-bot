@@ -27,14 +27,27 @@ const admins = {
   },
 
   async add({ userId, email, name, role = 'admin' }) {
-    const result = await pool.query(
-      `INSERT INTO admins (user_id, email, name, role) 
-       VALUES ($1, $2, $3, $4) 
-       ON CONFLICT (user_id) DO UPDATE SET email = $2, name = $3, role = $4
-       RETURNING *`,
-      [userId, email, name, role]
-    );
-    return result.rows[0];
+    // 如果有 userId，用 userId 做 upsert；否则用 email
+    if (userId) {
+      const result = await pool.query(
+        `INSERT INTO admins (user_id, email, name, role) 
+         VALUES ($1, $2, $3, $4) 
+         ON CONFLICT (user_id) DO UPDATE SET email = COALESCE($2, admins.email), name = COALESCE($3, admins.name), role = $4
+         RETURNING *`,
+        [userId, email, name, role]
+      );
+      return result.rows[0];
+    } else if (email) {
+      const result = await pool.query(
+        `INSERT INTO admins (user_id, email, name, role) 
+         VALUES ($1, $2, $3, $4) 
+         ON CONFLICT (email) DO UPDATE SET user_id = COALESCE($1, admins.user_id), name = COALESCE($3, admins.name), role = $4
+         RETURNING *`,
+        [userId, email, name, role]
+      );
+      return result.rows[0];
+    }
+    throw new Error('Either userId or email is required');
   },
 
   async remove(userId) {

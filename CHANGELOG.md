@@ -24,6 +24,17 @@
 - 飞书机器人消息交互
 - 多维表格集成
 
+### Security (2026-02-25)
+- 添加飞书 Webhook 签名验证中间件
+- 添加 API 身份验证中间件（API Key / Bearer Token）
+- 添加 Rate Limiting（API: 100/min, Webhook: 200/min）
+- 添加环境变量验证（启动时检查必需配置）
+- 修复 admins.add 的 upsert 逻辑（支持 email-only 添加）
+
+### Changed
+- webhook.js 改用结构化 logger 替代 console.log
+- 更新 .env.example 添加安全相关配置说明
+
 ---
 
 ## 版本记录模板
