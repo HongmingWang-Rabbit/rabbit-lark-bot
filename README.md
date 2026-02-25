@@ -155,6 +155,60 @@ npm install
 npm run dev
 ```
 
+## 测试
+
+```bash
+# Server 测试
+cd packages/server
+npm test              # 运行测试
+npm run test:watch    # 监听模式
+npm run test:coverage # 生成覆盖率报告
+
+# Web 测试
+cd packages/web
+npm test
+
+# Lint
+npm run lint
+npm run lint:fix
+```
+
+## CI/CD
+
+GitHub Actions 配置：
+
+- **CI** (`.github/workflows/ci.yml`)
+  - 推送到 main/develop 或 PR 时触发
+  - 运行 lint、test、build
+  - Docker 镜像构建验证
+
+- **Deploy** (`.github/workflows/deploy.yml`)
+  - 手动触发 (workflow_dispatch)
+  - 通过 SSH 部署到服务器
+  - 健康检查验证
+
+### 配置 Secrets
+
+在 GitHub 仓库 Settings → Secrets 添加：
+- `SSH_HOST` - 服务器 IP
+- `SSH_USER` - SSH 用户名
+- `SSH_PRIVATE_KEY` - SSH 私钥
+- `HEALTH_CHECK_URL` - 健康检查地址
+
+## 日志
+
+生产环境日志写入 `logs/YYYY-MM-DD.log`
+
+日志级别 (LOG_LEVEL): error, warn, info, debug
+
+```bash
+# 查看日志
+docker-compose logs -f server
+
+# 实时查看日志文件
+tail -f logs/$(date +%Y-%m-%d).log
+```
+
 ## License
 
 MIT

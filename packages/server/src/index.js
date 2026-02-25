@@ -3,6 +3,7 @@ require('dotenv').config({ path: require('path').join(__dirname, '../../../.env'
 const express = require('express');
 const cors = require('cors');
 const { pool } = require('./db');
+const logger = require('./utils/logger');
 const webhookRoutes = require('./routes/webhook');
 const apiRoutes = require('./routes/api');
 
@@ -12,20 +13,42 @@ const PORT = process.env.PORT || 3456;
 // Middleware
 app.use(cors());
 app.use(express.json());
+app.use(logger.middleware);
 
 // Health check
-app.get('/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+app.get('/health', async (req, res) => {
+  try {
+    await pool.query('SELECT 1');
+    res.json({ 
+      status: 'ok', 
+      timestamp: new Date().toISOString(),
+      version: process.env.npm_package_version || '1.0.0',
+    });
+  } catch (err) {
+    res.status(503).json({ status: 'error', error: 'Database unavailable' });
+  }
 });
 
 // Routes
 app.use('/webhook', webhookRoutes);
 app.use('/api', apiRoutes);
 
+// 404 handler
+app.use((req, res) => {
+  res.status(404).json({ error: 'Not found' });
+});
+
 // Error handler
 app.use((err, req, res, next) => {
-  console.error('Error:', err);
+  logger.error('Unhandled error', { error: err.message, stack: err.stack });
   res.status(500).json({ error: err.message });
+});
+
+// Graceful shutdown
+process.on('SIGTERM', async () => {
+  logger.info('SIGTERM received, shutting down...');
+  await pool.end();
+  process.exit(0);
 });
 
 // Start server
@@ -33,15 +56,15 @@ async function start() {
   try {
     // Test DB connection
     await pool.query('SELECT NOW()');
-    console.log('✅ 数据库已连接');
+    logger.info('Database connected');
     
     app.listen(PORT, () => {
-      console.log(`🐰 Rabbit Lark Server 已启动: http://localhost:${PORT}`);
-      console.log(`📌 Webhook: http://localhost:${PORT}/webhook/event`);
-      console.log(`📊 API: http://localhost:${PORT}/api`);
+      logger.info(`🐰 Rabbit Lark Server started`, { port: PORT });
+      logger.info(`Webhook: http://localhost:${PORT}/webhook/event`);
+      logger.info(`API: http://localhost:${PORT}/api`);
     });
   } catch (err) {
-    console.error('❌ 启动失败:', err);
+    logger.error('Startup failed', { error: err.message });
     process.exit(1);
   }
 }

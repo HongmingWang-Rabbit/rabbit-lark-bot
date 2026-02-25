@@ -1,0 +1,48 @@
+name: Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+          - production
+          - staging
+
+jobs:
+  deploy:
+    name: Deploy to ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            cd ~/rabbit-lark-bot
+            git pull origin main
+            docker-compose pull
+            docker-compose up -d --build
+            docker-compose ps
+            echo "✅ Deployment complete"
+
+      - name: Health check
+        run: |
+          sleep 10
+          curl -f ${{ secrets.HEALTH_CHECK_URL }}/health || exit 1
+          echo "✅ Health check passed"
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "❌ Deployment failed"
+          # Add notification logic (Slack, Discord, etc.)

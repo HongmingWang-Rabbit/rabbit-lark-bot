@@ -1,0 +1,118 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test-server:
+    name: Test Server
+    runs-on: ubuntu-latest
+    
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: test_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: packages/server/package-lock.json
+
+      - name: Install dependencies
+        working-directory: packages/server
+        run: npm ci || npm install
+
+      - name: Run linter
+        working-directory: packages/server
+        run: npm run lint || true
+
+      - name: Run tests
+        working-directory: packages/server
+        env:
+          DATABASE_URL: postgres://test:test@localhost:5432/test_db
+          FEISHU_APP_ID: test
+          FEISHU_APP_SECRET: test
+        run: npm test
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v3
+        if: always()
+        with:
+          directory: packages/server/coverage
+          flags: server
+
+  test-web:
+    name: Test Web
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: packages/web/package-lock.json
+
+      - name: Install dependencies
+        working-directory: packages/web
+        run: npm ci || npm install
+
+      - name: Type check
+        working-directory: packages/web
+        run: npx tsc --noEmit
+
+      - name: Build
+        working-directory: packages/web
+        env:
+          NEXT_PUBLIC_API_URL: http://localhost:3456/api
+        run: npm run build
+
+  docker-build:
+    name: Docker Build
+    runs-on: ubuntu-latest
+    needs: [test-server, test-web]
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build server image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./packages/server
+          push: false
+          tags: rabbit-lark-server:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build web image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./packages/web
+          push: false
+          tags: rabbit-lark-web:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

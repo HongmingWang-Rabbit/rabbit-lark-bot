@@ -3,5 +3,25 @@ node_modules/
 *.log
 .DS_Store
 config.sh
+
+# Logs
 logs/
+
+# Runtime
 webhook/pending/
+
+# Test & Coverage
+coverage/
+.nyc_output/
+
+# Build
+.next/
+out/
+dist/
+*.tsbuildinfo
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
