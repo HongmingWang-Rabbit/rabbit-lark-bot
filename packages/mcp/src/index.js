@@ -21,34 +21,59 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 
 // Configuration from environment
-const RABBIT_LARK_API_URL = process.env.RABBIT_LARK_API_URL || 'http://localhost:3456';
+const RABBIT_LARK_API_URL = process.env.RABBIT_LARK_API_URL;
 const RABBIT_LARK_API_KEY = process.env.RABBIT_LARK_API_KEY || '';
+const REQUEST_TIMEOUT_MS = parseInt(process.env.RABBIT_LARK_TIMEOUT_MS) || 30000;
+
+// Validate required config on startup
+function validateConfig() {
+  if (!RABBIT_LARK_API_URL) {
+    console.error('Error: RABBIT_LARK_API_URL environment variable is required');
+    console.error('Example: export RABBIT_LARK_API_URL=http://localhost:3456');
+    process.exit(1);
+  }
+}
 
 /**
- * Make API request to Rabbit Lark Server
+ * Make API request to Rabbit Lark Server with timeout
  */
 async function apiRequest(endpoint, method = 'GET', body = null) {
   const url = `${RABBIT_LARK_API_URL}${endpoint}`;
+  
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  
   const options = {
     method,
     headers: {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${RABBIT_LARK_API_KEY}`,
     },
+    signal: controller.signal,
   };
   
   if (body) {
     options.body = JSON.stringify(body);
   }
   
-  const response = await fetch(url, options);
-  
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`API request failed: ${response.status} - ${error}`);
+  try {
+    const response = await fetch(url, options);
+    clearTimeout(timeoutId);
+    
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(`API request failed: ${response.status} - ${error}`);
+    }
+    
+    return response.json();
+  } catch (err) {
+    clearTimeout(timeoutId);
+    
+    if (err.name === 'AbortError') {
+      throw new Error(`Request timeout after ${REQUEST_TIMEOUT_MS}ms: ${endpoint}`);
+    }
+    throw err;
   }
-  
-  return response.json();
 }
 
 // Tool definitions
@@ -245,9 +270,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
 // Start server
 async function main() {
+  validateConfig();
+  
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error('Rabbit Lark MCP Server running on stdio');
+  console.error(`API URL: ${RABBIT_LARK_API_URL}`);
 }
 
 main().catch((error) => {

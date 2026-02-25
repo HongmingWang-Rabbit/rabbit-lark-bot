@@ -9,6 +9,7 @@
  *   AGENT_API_KEY - Shared secret for signing (optional)
  */
 
+const crypto = require('crypto');
 const logger = require('../utils/logger');
 
 /**
@@ -52,7 +53,8 @@ function formatForAgent(event, apiBaseUrl) {
       text: rawContent.text || '',
       ...rawContent,
     };
-  } catch {
+  } catch (parseErr) {
+    logger.debug('Failed to parse message content as JSON', { error: parseErr.message });
     content = { type: 'text', text: message.content || '' };
   }
   
@@ -152,7 +154,6 @@ async function forwardToAgent(webhookUrl, message, options = {}) {
 function generateSignature(payload, secret) {
   if (!secret) return '';
   
-  const crypto = require('crypto');
   const hmac = crypto.createHmac('sha256', secret);
   hmac.update(JSON.stringify(payload));
   return hmac.digest('hex');

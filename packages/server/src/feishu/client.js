@@ -111,9 +111,10 @@ async function request(path, options = {}) {
  * @param {string} receiveId - 接收者 ID
  * @param {string} text - 消息内容
  * @param {string} receiveIdType - ID 类型 (user_id | open_id | chat_id)
+ * @returns {Promise<Object>} 飞书 API 响应
  */
 async function sendMessage(receiveId, text, receiveIdType = 'user_id') {
-  return request(`/im/v1/messages?receive_id_type=${receiveIdType}`, {
+  const result = await request(`/im/v1/messages?receive_id_type=${receiveIdType}`, {
     method: 'POST',
     body: JSON.stringify({
       receive_id: receiveId,
@@ -121,6 +122,54 @@ async function sendMessage(receiveId, text, receiveIdType = 'user_id') {
       content: JSON.stringify({ text }),
     }),
   });
+  
+  // 检查飞书 API 错误
+  if (result.code && result.code !== 0) {
+    throw new Error(`Feishu API error: ${result.code} - ${result.msg}`);
+  }
+  
+  return result;
+}
+
+/**
+ * 通用发送消息（支持不同消息类型）
+ * @param {string} receiveId - 接收者 ID
+ * @param {string} content - 消息内容
+ * @param {string} msgType - 消息类型 (text | interactive)
+ * @param {string} receiveIdType - ID 类型 (user_id | open_id | chat_id)
+ * @returns {Promise<string>} 消息 ID
+ */
+async function sendMessageByType(receiveId, content, msgType = 'text', receiveIdType = 'user_id') {
+  let body;
+  
+  if (msgType === 'text') {
+    body = {
+      receive_id: receiveId,
+      msg_type: 'text',
+      content: JSON.stringify({ text: content }),
+    };
+  } else if (msgType === 'interactive') {
+    // interactive 类型，content 应该是 JSON 字符串或对象
+    const cardContent = typeof content === 'string' ? content : JSON.stringify(content);
+    body = {
+      receive_id: receiveId,
+      msg_type: 'interactive',
+      content: cardContent,
+    };
+  } else {
+    throw new Error(`Unsupported message type: ${msgType}`);
+  }
+  
+  const result = await request(`/im/v1/messages?receive_id_type=${receiveIdType}`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+  
+  if (result.code && result.code !== 0) {
+    throw new Error(`Feishu API error: ${result.code} - ${result.msg}`);
+  }
+  
+  return result.data?.message_id;
 }
 
 /**
@@ -267,6 +316,7 @@ module.exports = {
   getToken,
   request,
   sendMessage,
+  sendMessageByType,
   sendCardMessage,
   replyMessage,
   addReaction,

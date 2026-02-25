@@ -12,6 +12,18 @@ const logger = require('../utils/logger');
 const agentForwarder = require('../services/agentForwarder');
 
 /**
+ * Detect receive_id_type based on ID format
+ * @param {string} id - Lark ID
+ * @returns {string} receive_id_type
+ */
+function detectIdType(id) {
+  if (!id) return 'user_id';
+  if (id.startsWith('oc_')) return 'chat_id';  // 群聊 ID
+  if (id.startsWith('ou_')) return 'open_id';  // open_id
+  return 'user_id';  // 默认 user_id
+}
+
+/**
  * POST /api/agent/send
  * Send a message to a Lark user or chat
  */
@@ -23,9 +35,10 @@ router.post('/send', async (req, res) => {
       return res.status(400).json({ error: 'chat_id and content are required' });
     }
     
-    logger.info('Agent sending message', { chat_id, contentLength: content.length });
+    logger.info('Agent sending message', { chat_id, contentLength: content.length, msg_type });
     
-    const message_id = await feishu.sendMessage(chat_id, content, msg_type);
+    const receiveIdType = detectIdType(chat_id);
+    const message_id = await feishu.sendMessageByType(chat_id, content, msg_type, receiveIdType);
     
     res.json({ success: true, message_id });
   } catch (err) {
@@ -86,15 +99,18 @@ router.post('/react', async (req, res) => {
  */
 router.get('/history', async (req, res) => {
   try {
-    const { chat_id, limit = 20, before } = req.query;
+    const { chat_id, limit = '20', before } = req.query;
     
     if (!chat_id) {
       return res.status(400).json({ error: 'chat_id is required' });
     }
     
-    logger.info('Agent fetching history', { chat_id, limit });
+    // 验证并限制 limit 范围
+    const parsedLimit = Math.min(Math.max(1, parseInt(limit) || 20), 100);
     
-    const messages = await feishu.getMessageHistory(chat_id, parseInt(limit), before);
+    logger.info('Agent fetching history', { chat_id, limit: parsedLimit });
+    
+    const messages = await feishu.getMessageHistory(chat_id, parsedLimit, before);
     
     res.json({ success: true, messages });
   } catch (err) {
