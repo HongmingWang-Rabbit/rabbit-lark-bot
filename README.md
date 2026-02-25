@@ -1,9 +1,57 @@
 # 🐰 Rabbit Lark Bot
 
-飞书自动化工具集 Monorepo，包含：
-- **Server** - API 服务 + 飞书 Webhook
+**让任何 AI Agent 接入飞书的桥接服务**
+
+Rabbit Lark Bot 是一个消息桥接平台，将飞书消息转发给 AI Agent，并让 Agent 通过 MCP 或 API 回复。支持任意 AI Agent 框架（Clawdbot、LangChain、AutoGPT 等）无缝接入飞书。
+
+## 包含组件
+
+- **Server** - API 服务 + 飞书 Webhook + Agent 转发
+- **MCP** - Model Context Protocol 服务器（让 Agent 操作飞书）
 - **Web** - 管理后台 Dashboard
 - **Scripts** - CLI 工具脚本
+
+## 架构
+
+```
+┌─────────────────┐         ┌──────────────────────────────────┐
+│   Lark/Feishu   │◄───────►│      Rabbit Lark Bot Server      │
+│   (用户消息)     │         │  - 接收飞书 Webhook               │
+└─────────────────┘         │  - 转发消息到 AI Agent            │
+                            │  - 提供 Agent API                 │
+                            └──────────────┬───────────────────┘
+                                           │
+                    ┌──────────────────────┼──────────────────────┐
+                    │                      │                      │
+                    ▼                      ▼                      ▼
+           ┌───────────────┐      ┌───────────────┐      ┌───────────────┐
+           │   Clawdbot    │      │   LangChain   │      │  Your Agent   │
+           │  (via MCP)    │      │  (via API)    │      │  (via API)    │
+           └───────────────┘      └───────────────┘      └───────────────┘
+```
+
+### 消息格式（发送给 Agent）
+
+```json
+{
+  "source": {
+    "bridge": "rabbit-lark-bot",
+    "platform": "lark",
+    "version": "1.0.0",
+    "capabilities": ["text", "image", "file", "reply", "reaction"]
+  },
+  "reply_via": {
+    "mcp": "rabbit-lark",
+    "api": "https://your-server.com/api/agent/send"
+  },
+  "event": "message",
+  "message_id": "om_xxx",
+  "chat_id": "oc_xxx",
+  "user": { "id": "ou_xxx", "type": "user" },
+  "content": { "type": "text", "text": "Hello!" },
+  "timestamp": 1234567890
+}
+```
 
 ## 目录结构
 
@@ -12,26 +60,20 @@ rabbit-lark-bot/
 ├── docker-compose.yml      # 服务编排
 ├── .env                    # 配置文件（不提交）
 ├── db/
-│   └── init.sql            # 数据库初始化
+│   ├── init.sql            # 数据库初始化
+│   └── migrations/         # 数据库迁移
 ├── packages/
-│   ├── server/             # API + Webhook 服务
-│   │   ├── Dockerfile
+│   ├── server/             # API + Webhook + Agent 转发
 │   │   └── src/
-│   │       ├── index.js
-│   │       ├── routes/     # API 路由
-│   │       ├── services/   # 业务逻辑
-│   │       ├── db/         # 数据库操作
-│   │       └── feishu/     # 飞书 API 封装
+│   │       ├── routes/
+│   │       │   ├── webhook.js   # 飞书事件接收
+│   │       │   └── agent.js     # Agent API
+│   │       └── services/
+│   │           └── agentForwarder.js  # 消息转发
+│   ├── mcp/                # MCP Server（让 Agent 操作飞书）
+│   │   └── src/index.js
 │   ├── web/                # Next.js 管理后台
-│   │   ├── Dockerfile
-│   │   └── src/app/
-│   │       ├── page.tsx        # Dashboard
-│   │       ├── tasks/          # 任务管理
-│   │       ├── admins/         # 管理员管理
-│   │       └── settings/       # 系统设置
 │   └── scripts/            # CLI 工具
-│       ├── reminder.sh
-│       └── feishu.sh
 └── docs/
 ```
 
@@ -93,28 +135,80 @@ docker-compose down
 3. 添加事件: `im.message.receive_v1`
 4. 开通权限: `bitable:app`, `im:message`
 
+### 5. 接入你的 AI Agent
+
+**方式一：注册 Webhook（推荐）**
+
+Agent 提供一个 HTTP endpoint 接收消息：
+
+```bash
+curl -X POST http://localhost:3456/api/agent/register \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "my-agent",
+    "webhook_url": "https://my-agent.com/lark-webhook",
+    "api_key": "optional-shared-secret"
+  }'
+```
+
+当用户在飞书发消息时，Server 会 POST 到你的 webhook_url。
+
+**方式二：使用 MCP（适用于 Claude/Clawdbot）**
+
+安装 MCP server 让 Agent 主动操作飞书：
+
+```bash
+cd packages/mcp
+npm install
+npm link
+
+# 配置环境变量
+export RABBIT_LARK_API_URL=http://localhost:3456
+export RABBIT_LARK_API_KEY=your-api-key
+```
+
+在 Claude Desktop 或 Clawdbot 中配置 MCP：
+
+```json
+{
+  "mcpServers": {
+    "rabbit-lark": {
+      "command": "rabbit-lark-mcp",
+      "env": {
+        "RABBIT_LARK_API_URL": "http://localhost:3456",
+        "RABBIT_LARK_API_KEY": "your-api-key"
+      }
+    }
+  }
+}
+```
+
 ## API 接口
 
-### Dashboard
-- `GET /api/dashboard` - 获取统计数据
+### Agent API（核心）
 
-### Tasks
-- `GET /api/tasks` - 任务列表
-- `POST /api/tasks` - 创建任务
-- `POST /api/tasks/:id/complete` - 完成任务
-- `DELETE /api/tasks/:id` - 删除任务
+| 端点 | 方法 | 描述 |
+|------|------|------|
+| `/api/agent/register` | POST | 注册 Agent webhook |
+| `/api/agent/list` | GET | 列出已注册 Agent |
+| `/api/agent/:name` | DELETE | 移除 Agent |
+| `/api/agent/send` | POST | 发送消息到飞书 |
+| `/api/agent/reply` | POST | 回复特定消息 |
+| `/api/agent/react` | POST | 添加表情回应 |
+| `/api/agent/history` | GET | 获取消息历史 |
+| `/api/agent/user/:id` | GET | 获取用户信息 |
+| `/api/agent/schema` | GET | 获取消息格式文档 |
 
-### Admins
-- `GET /api/admins` - 管理员列表
-- `POST /api/admins` - 添加管理员
-- `DELETE /api/admins/:userId` - 移除管理员
+### 管理 API
 
-### Settings
-- `GET /api/settings` - 配置列表
-- `PUT /api/settings/:key` - 更新配置
-
-### Audit
-- `GET /api/audit` - 审计日志
+| 端点 | 方法 | 描述 |
+|------|------|------|
+| `/api/dashboard` | GET | Dashboard 统计 |
+| `/api/tasks` | GET/POST | 任务列表/创建 |
+| `/api/admins` | GET/POST | 管理员列表/添加 |
+| `/api/settings` | GET/PUT | 配置管理 |
+| `/api/audit` | GET | 审计日志 |
 
 ## 用户权限
 

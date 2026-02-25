@@ -162,6 +162,54 @@ async function getUserInfo(userId) {
   return request(`/contact/v3/users/${userId}`);
 }
 
+/**
+ * 回复消息
+ * @param {string} messageId - 要回复的消息 ID
+ * @param {string} text - 回复内容
+ */
+async function replyMessage(messageId, text) {
+  const result = await request(`/im/v1/messages/${messageId}/reply`, {
+    method: 'POST',
+    body: JSON.stringify({
+      msg_type: 'text',
+      content: JSON.stringify({ text }),
+    }),
+  });
+  return result.data?.message_id;
+}
+
+/**
+ * 添加消息表情回应
+ * @param {string} messageId - 消息 ID
+ * @param {string} emojiType - 表情类型
+ */
+async function addReaction(messageId, emojiType) {
+  return request(`/im/v1/messages/${messageId}/reactions`, {
+    method: 'POST',
+    body: JSON.stringify({
+      reaction_type: { emoji_type: emojiType },
+    }),
+  });
+}
+
+/**
+ * 获取消息历史
+ * @param {string} containerId - 会话 ID
+ * @param {number} pageSize - 每页数量
+ * @param {string} startTime - 起始时间戳（可选）
+ */
+async function getMessageHistory(containerId, pageSize = 20, pageToken = null) {
+  const params = new URLSearchParams({
+    container_id_type: 'chat',
+    container_id: containerId,
+    page_size: String(pageSize),
+  });
+  if (pageToken) params.set('page_token', pageToken);
+  
+  const result = await request(`/im/v1/messages?${params}`);
+  return result.data?.items || [];
+}
+
 // ============ 多维表格相关 ============
 const bitable = {
   /**
@@ -220,6 +268,9 @@ module.exports = {
   request,
   sendMessage,
   sendCardMessage,
+  replyMessage,
+  addReaction,
+  getMessageHistory,
   getUserByEmail,
   getUserInfo,
   bitable,

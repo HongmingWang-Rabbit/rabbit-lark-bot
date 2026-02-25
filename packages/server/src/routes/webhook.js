@@ -4,6 +4,7 @@ const feishu = require('../feishu/client');
 const { admins } = require('../db');
 const reminderService = require('../services/reminder');
 const logger = require('../utils/logger');
+const agentForwarder = require('../services/agentForwarder');
 
 // ============ 用户会话管理 ============
 
@@ -74,7 +75,14 @@ router.post('/event', async (req, res) => {
     const msgType = event.message?.message_type;
     const senderId = event.sender?.sender_id?.user_id;
 
-    if (msgType === 'text' && senderId) {
+    // 转发给注册的 AI Agents
+    const apiBaseUrl = process.env.API_BASE_URL || `http://localhost:${process.env.PORT || 3456}`;
+    agentForwarder.forwardToAllAgents(event, apiBaseUrl).catch((err) => {
+      logger.error('Agent forwarding failed', { error: err.message });
+    });
+
+    // 内置的催办功能（可选，保留向后兼容）
+    if (process.env.ENABLE_BUILTIN_BOT !== 'false' && msgType === 'text' && senderId) {
       const content = JSON.parse(event.message.content);
       // 异步处理，立即返回
       handleUserMessage(senderId, content.text).catch((err) => {

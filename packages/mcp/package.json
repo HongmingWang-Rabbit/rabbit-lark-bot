@@ -1,0 +1,27 @@
+{
+  "name": "@rabbit-lark/mcp",
+  "version": "1.0.0",
+  "description": "Rabbit Lark MCP Server - Connect AI agents to Lark",
+  "type": "module",
+  "main": "src/index.js",
+  "bin": {
+    "rabbit-lark-mcp": "./src/index.js"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "mcp",
+    "lark",
+    "feishu",
+    "ai-agent",
+    "rabbit-lark"
+  ]
+}
