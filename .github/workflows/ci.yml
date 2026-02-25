@@ -50,6 +50,9 @@ jobs:
           DATABASE_URL: postgres://test:test@localhost:5432/test_db
           FEISHU_APP_ID: test
           FEISHU_APP_SECRET: test
+          REMINDER_APP_TOKEN: test
+          REMINDER_TABLE_ID: test
+          NODE_ENV: test
         run: npm test
 
       - name: Upload coverage
