@@ -1,11 +1,21 @@
 const { Pool } = require('pg');
+const logger = require('../utils/logger');
 
+// 连接池配置
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL
+  connectionString: process.env.DATABASE_URL,
+  max: parseInt(process.env.DB_POOL_MAX, 10) || 10,           // 最大连接数
+  idleTimeoutMillis: parseInt(process.env.DB_IDLE_TIMEOUT, 10) || 30000, // 空闲超时
+  connectionTimeoutMillis: parseInt(process.env.DB_CONNECT_TIMEOUT, 10) || 5000, // 连接超时
+  statement_timeout: parseInt(process.env.DB_STATEMENT_TIMEOUT, 10) || 10000, // 查询超时
 });
 
 pool.on('error', (err) => {
-  console.error('❌ 数据库连接错误:', err);
+  logger.error('Database pool error', { error: err.message });
+});
+
+pool.on('connect', () => {
+  logger.debug('New database connection established');
 });
 
 // ============ Admin 操作 ============

@@ -35,6 +35,16 @@
 - webhook.js 改用结构化 logger 替代 console.log
 - 更新 .env.example 添加安全相关配置说明
 
+### Fixed (2026-02-25 Code Review Round 1)
+- **[Critical]** feishu/client.js: 添加错误处理、请求超时、响应验证
+- **[Critical]** webhook.js: 修复 userSessions 内存泄漏，添加会话过期机制
+- **[Critical]** web/api.ts: 添加 API Key 认证头传递
+- **[Warning]** services/reminder.js: 提取魔法数字为常量 (DEFAULT_DEADLINE_DAYS)
+- **[Warning]** services/reminder.js: 集中管理字段名常量 (FIELDS, STATUS)
+- **[Warning]** webhook.js: 修复数字选择边界检查（0 和越界）
+- **[Warning]** web/api.ts & tasks/page.tsx: 添加完整 TypeScript 类型定义
+- **[Refactor]** webhook.js: 拆分消息处理函数，提高可读性和可维护性
+
 ---
 
 ## 版本记录模板

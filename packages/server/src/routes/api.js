@@ -21,7 +21,7 @@ router.get('/dashboard', async (req, res) => {
         totalTasks: allTasks.length,
         pendingTasks: pendingTasks.length,
         completedTasks: allTasks.filter(t => 
-          reminderService.extractFieldText(t.fields['状态']) === '已完成'
+          reminderService.extractFieldText(t.fields[reminderService.FIELDS.STATUS]) === reminderService.STATUS.COMPLETED
         ).length,
         adminCount: adminList.length
       },
@@ -38,15 +38,16 @@ router.get('/dashboard', async (req, res) => {
 router.get('/tasks', async (req, res) => {
   try {
     const tasks = await reminderService.getAllTasks();
+    const { FIELDS } = reminderService;
     const formatted = tasks.map(t => ({
       id: t.record_id,
-      name: reminderService.extractFieldText(t.fields['任务名称']),
-      target: reminderService.extractFieldText(t.fields['催办对象']),
-      status: reminderService.extractFieldText(t.fields['状态']),
-      deadline: t.fields['截止时间'],
-      proof: t.fields['证明材料']?.link || null,
-      note: reminderService.extractFieldText(t.fields['备注']),
-      createdAt: t.fields['创建时间']
+      name: reminderService.extractFieldText(t.fields[FIELDS.TASK_NAME]),
+      target: reminderService.extractFieldText(t.fields[FIELDS.TARGET]),
+      status: reminderService.extractFieldText(t.fields[FIELDS.STATUS]),
+      deadline: t.fields[FIELDS.DEADLINE],
+      proof: t.fields[FIELDS.PROOF]?.link || null,
+      note: reminderService.extractFieldText(t.fields[FIELDS.NOTE]),
+      createdAt: t.fields[FIELDS.CREATED_AT]
     }));
     res.json(formatted);
   } catch (err) {

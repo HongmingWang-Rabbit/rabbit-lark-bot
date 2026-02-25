@@ -31,11 +31,29 @@ jest.mock('../src/feishu/client', () => ({
   },
 }));
 
+// Mock logger
+jest.mock('../src/utils/logger', () => ({
+  info: jest.fn(),
+  warn: jest.fn(),
+  error: jest.fn(),
+  debug: jest.fn(),
+  middleware: (req, res, next) => next(),
+}));
+
 // Mock reminder service
 jest.mock('../src/services/reminder', () => ({
   getAllTasks: jest.fn().mockResolvedValue([]),
   getAllPendingTasks: jest.fn().mockResolvedValue([]),
-  extractFieldText: jest.fn(f => f),
+  extractFieldText: jest.fn((f) => f),
+  FIELDS: {
+    TASK_NAME: '任务名称',
+    TARGET: '催办对象',
+    STATUS: '状态',
+  },
+  STATUS: {
+    PENDING: '待办',
+    COMPLETED: '已完成',
+  },
 }));
 
 const apiRoutes = require('../src/routes/api');
@@ -45,10 +63,14 @@ app.use(express.json());
 app.use('/api', apiRoutes);
 
 describe('API Routes', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
   describe('GET /api/dashboard', () => {
     it('should return dashboard stats', async () => {
       const res = await request(app).get('/api/dashboard');
-      
+
       expect(res.status).toBe(200);
       expect(res.body).toHaveProperty('stats');
       expect(res.body.stats).toHaveProperty('totalTasks');
@@ -60,7 +82,7 @@ describe('API Routes', () => {
   describe('GET /api/admins', () => {
     it('should return admin list', async () => {
       const res = await request(app).get('/api/admins');
-      
+
       expect(res.status).toBe(200);
       expect(Array.isArray(res.body)).toBe(true);
     });
@@ -71,23 +93,22 @@ describe('API Routes', () => {
       const res = await request(app)
         .post('/api/admins')
         .send({ email: 'test@test.com', name: 'Test' });
-      
+
       expect(res.status).toBe(200);
     });
 
     it('should reject without email or userId', async () => {
-      const res = await request(app)
-        .post('/api/admins')
-        .send({ name: 'Test' });
-      
+      const res = await request(app).post('/api/admins').send({ name: 'Test' });
+
       expect(res.status).toBe(400);
+      expect(res.body).toHaveProperty('error');
     });
   });
 
   describe('GET /api/tasks', () => {
     it('should return task list', async () => {
       const res = await request(app).get('/api/tasks');
-      
+
       expect(res.status).toBe(200);
       expect(Array.isArray(res.body)).toBe(true);
     });
@@ -96,7 +117,7 @@ describe('API Routes', () => {
   describe('GET /api/settings', () => {
     it('should return settings', async () => {
       const res = await request(app).get('/api/settings');
-      
+
       expect(res.status).toBe(200);
       expect(Array.isArray(res.body)).toBe(true);
     });
@@ -105,9 +126,15 @@ describe('API Routes', () => {
   describe('GET /api/audit', () => {
     it('should return audit logs', async () => {
       const res = await request(app).get('/api/audit');
-      
+
       expect(res.status).toBe(200);
       expect(Array.isArray(res.body)).toBe(true);
+    });
+
+    it('should accept query params', async () => {
+      const res = await request(app).get('/api/audit?limit=10&offset=0');
+
+      expect(res.status).toBe(200);
     });
   });
 });

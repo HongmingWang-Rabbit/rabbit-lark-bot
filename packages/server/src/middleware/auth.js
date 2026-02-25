@@ -49,63 +49,73 @@ function feishuWebhookAuth(req, res, next) {
  * 支持 Bearer token 或 API key
  */
 async function apiAuth(req, res, next) {
-  // 健康检查和公开接口跳过
-  const publicPaths = ['/health', '/api/health'];
-  if (publicPaths.includes(req.path)) {
-    return next();
-  }
-
-  const authHeader = req.headers.authorization;
-  const apiKey = req.headers['x-api-key'];
-
-  // 开发环境可以跳过认证
-  if (process.env.NODE_ENV === 'development' && !process.env.REQUIRE_AUTH) {
-    return next();
-  }
-
-  // 检查 API Key
-  if (apiKey && apiKey === process.env.API_KEY) {
-    return next();
-  }
-
-  // 检查 Bearer token (预留给未来 JWT 实现)
-  if (authHeader?.startsWith('Bearer ')) {
-    const token = authHeader.slice(7);
-    // TODO: 实现 JWT 验证
-    if (token === process.env.API_KEY) {
+  try {
+    // 健康检查和公开接口跳过
+    const publicPaths = ['/health', '/api/health'];
+    if (publicPaths.includes(req.path)) {
       return next();
     }
-  }
 
-  // 如果没有配置 API_KEY，允许访问（开发模式）
-  if (!process.env.API_KEY) {
-    logger.warn('API_KEY not set, API is unprotected');
-    return next();
-  }
+    const authHeader = req.headers.authorization;
+    const apiKey = req.headers['x-api-key'];
 
-  logger.warn('Unauthorized API access attempt', { path: req.path, ip: req.ip });
-  res.status(401).json({ error: 'Unauthorized' });
+    // 开发环境可以跳过认证
+    if (process.env.NODE_ENV === 'development' && !process.env.REQUIRE_AUTH) {
+      return next();
+    }
+
+    // 检查 API Key
+    if (apiKey && apiKey === process.env.API_KEY) {
+      return next();
+    }
+
+    // 检查 Bearer token (预留给未来 JWT 实现)
+    if (authHeader?.startsWith('Bearer ')) {
+      const token = authHeader.slice(7);
+      // TODO: 实现 JWT 验证
+      if (token === process.env.API_KEY) {
+        return next();
+      }
+    }
+
+    // 如果没有配置 API_KEY，允许访问（开发模式）
+    if (!process.env.API_KEY) {
+      logger.warn('API_KEY not set, API is unprotected');
+      return next();
+    }
+
+    logger.warn('Unauthorized API access attempt', { path: req.path, ip: req.ip });
+    res.status(401).json({ error: 'Unauthorized' });
+  } catch (err) {
+    logger.error('Auth middleware error', { error: err.message });
+    res.status(500).json({ error: 'Authentication error' });
+  }
 }
 
 /**
  * 检查是否为管理员
  */
 async function requireAdmin(req, res, next) {
-  const userId = req.headers['x-user-id'];
-  const email = req.headers['x-user-email'];
+  try {
+    const userId = req.headers['x-user-id'];
+    const email = req.headers['x-user-email'];
 
-  if (!userId && !email) {
-    return res.status(401).json({ error: 'User identification required' });
+    if (!userId && !email) {
+      return res.status(401).json({ error: 'User identification required' });
+    }
+
+    const isAdmin = await admins.isAdmin(userId, email);
+    if (!isAdmin) {
+      logger.warn('Non-admin access attempt', { userId, email, path: req.path });
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+
+    req.adminUser = { userId, email };
+    next();
+  } catch (err) {
+    logger.error('Admin check error', { error: err.message });
+    res.status(500).json({ error: 'Authorization error' });
   }
-
-  const isAdmin = await admins.isAdmin(userId, email);
-  if (!isAdmin) {
-    logger.warn('Non-admin access attempt', { userId, email, path: req.path });
-    return res.status(403).json({ error: 'Admin access required' });
-  }
-
-  req.adminUser = { userId, email };
-  next();
 }
 
 module.exports = {
