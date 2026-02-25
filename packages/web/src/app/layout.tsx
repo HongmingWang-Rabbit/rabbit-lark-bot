@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import Link from 'next/link';
 import './globals.css';
 
 export const metadata: Metadata = {
@@ -17,20 +18,31 @@ export default function RootLayout({
         <nav className="bg-white shadow-sm border-b">
           <div className="max-w-7xl mx-auto px-4 py-4">
             <div className="flex items-center justify-between">
-              <h1 className="text-xl font-bold text-gray-900">🐰 Rabbit Lark Bot</h1>
+              <Link href="/" className="text-xl font-bold text-gray-900 hover:text-gray-700">
+                🐰 Rabbit Lark Bot
+              </Link>
               <div className="flex gap-6">
-                <a href="/" className="text-gray-600 hover:text-gray-900">Dashboard</a>
-                <a href="/tasks" className="text-gray-600 hover:text-gray-900">任务</a>
-                <a href="/admins" className="text-gray-600 hover:text-gray-900">管理员</a>
-                <a href="/settings" className="text-gray-600 hover:text-gray-900">设置</a>
+                <NavLink href="/">Dashboard</NavLink>
+                <NavLink href="/tasks">任务</NavLink>
+                <NavLink href="/admins">管理员</NavLink>
+                <NavLink href="/settings">设置</NavLink>
               </div>
             </div>
           </div>
         </nav>
-        <main className="max-w-7xl mx-auto px-4 py-8">
-          {children}
-        </main>
+        <main className="max-w-7xl mx-auto px-4 py-8">{children}</main>
       </body>
     </html>
+  );
+}
+
+function NavLink({ href, children }: { href: string; children: React.ReactNode }) {
+  return (
+    <Link
+      href={href}
+      className="text-gray-600 hover:text-gray-900 transition-colors"
+    >
+      {children}
+    </Link>
   );
 }

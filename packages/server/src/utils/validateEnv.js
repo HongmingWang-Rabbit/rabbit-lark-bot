@@ -33,9 +33,8 @@ function validateEnv() {
 
   if (missing.length > 0) {
     logger.error('Missing required environment variables', { missing });
-    console.error('\n❌ Missing required environment variables:');
-    missing.forEach(key => console.error(`   - ${key}`));
-    console.error('\nPlease check your .env file.\n');
+    logger.error(`Missing: ${missing.join(', ')}`);
+    logger.error('Please check your .env file');
     process.exit(1);
   }
 

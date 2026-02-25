@@ -1,15 +1,15 @@
 'use client';
 
 import useSWR from 'swr';
-import { api } from '@/lib/api';
+import { api, DashboardData, AuditLog } from '@/lib/api';
 
 export default function Dashboard() {
-  const { data, error, isLoading } = useSWR('/dashboard', api.getDashboard);
+  const { data, error, isLoading } = useSWR<DashboardData>('/dashboard', api.getDashboard);
 
-  if (isLoading) return <div className="text-center py-12">加载中...</div>;
-  if (error) return <div className="text-center py-12 text-red-500">加载失败: {error.message}</div>;
+  if (isLoading) return <LoadingState />;
+  if (error) return <ErrorState message={error.message} />;
 
-  const stats = data?.stats || {};
+  const stats = data?.stats || { totalTasks: 0, pendingTasks: 0, completedTasks: 0, adminCount: 0 };
   const activity = data?.recentActivity || [];
 
   return (
@@ -25,32 +25,37 @@ export default function Dashboard() {
       </div>
 
       {/* 最近活动 */}
-      <div className="bg-white rounded-lg shadow p-6">
-        <h3 className="text-lg font-semibold mb-4">最近活动</h3>
-        {activity.length === 0 ? (
-          <p className="text-gray-500">暂无活动记录</p>
-        ) : (
-          <div className="space-y-3">
-            {activity.map((log: any) => (
-              <div key={log.id} className="flex items-center justify-between py-2 border-b last:border-0">
-                <div>
-                  <span className="font-medium">{actionLabel(log.action)}</span>
-                  {log.target_id && <span className="text-gray-500 ml-2">({log.target_id.slice(0, 8)}...)</span>}
-                </div>
-                <span className="text-sm text-gray-400">
-                  {new Date(log.created_at).toLocaleString('zh-CN')}
-                </span>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
+      <RecentActivity logs={activity} />
     </div>
   );
 }
 
-function StatCard({ title, value, color }: { title: string; value: number; color: string }) {
-  const colors: Record<string, string> = {
+function LoadingState() {
+  return (
+    <div className="text-center py-12">
+      <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500" />
+      <p className="mt-2 text-gray-500">加载中...</p>
+    </div>
+  );
+}
+
+function ErrorState({ message }: { message: string }) {
+  return (
+    <div className="text-center py-12 text-red-500">
+      <p>❌ 加载失败</p>
+      <p className="text-sm mt-2">{message}</p>
+    </div>
+  );
+}
+
+interface StatCardProps {
+  title: string;
+  value: number;
+  color: 'blue' | 'yellow' | 'green' | 'purple';
+}
+
+function StatCard({ title, value, color }: StatCardProps) {
+  const colors: Record<StatCardProps['color'], string> = {
     blue: 'bg-blue-50 text-blue-700 border-blue-200',
     yellow: 'bg-yellow-50 text-yellow-700 border-yellow-200',
     green: 'bg-green-50 text-green-700 border-green-200',
@@ -65,13 +70,37 @@ function StatCard({ title, value, color }: { title: string; value: number; color
   );
 }
 
-function actionLabel(action: string): string {
-  const labels: Record<string, string> = {
-    create_task: '创建任务',
-    complete_task: '完成任务',
-    delete_task: '删除任务',
-    add_admin: '添加管理员',
-    remove_admin: '移除管理员',
-  };
-  return labels[action] || action;
+const ACTION_LABELS: Record<string, string> = {
+  create_task: '创建任务',
+  complete_task: '完成任务',
+  delete_task: '删除任务',
+  add_admin: '添加管理员',
+  remove_admin: '移除管理员',
+};
+
+function RecentActivity({ logs }: { logs: AuditLog[] }) {
+  return (
+    <div className="bg-white rounded-lg shadow p-6">
+      <h3 className="text-lg font-semibold mb-4">最近活动</h3>
+      {logs.length === 0 ? (
+        <p className="text-gray-500">暂无活动记录</p>
+      ) : (
+        <div className="space-y-3">
+          {logs.map((log) => (
+            <div key={log.id} className="flex items-center justify-between py-2 border-b last:border-0">
+              <div>
+                <span className="font-medium">{ACTION_LABELS[log.action] || log.action}</span>
+                {log.target_id && (
+                  <span className="text-gray-500 ml-2">({log.target_id.slice(0, 8)}...)</span>
+                )}
+              </div>
+              <span className="text-sm text-gray-400">
+                {new Date(log.created_at).toLocaleString('zh-CN')}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
