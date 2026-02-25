@@ -35,6 +35,12 @@
 - webhook.js 改用结构化 logger 替代 console.log
 - 更新 .env.example 添加安全相关配置说明
 
+### Documentation
+- docs/architecture.md - Complete system architecture documentation
+- docs/edit-history/2026-02-25.md - Daily edit history
+- Updated README with documentation links
+- Updated API docs with bot commands and HTTP status codes
+
 ### Fixed (2026-02-25 Code Review Round 1)
 - **[Critical]** feishu/client.js: 添加错误处理、请求超时、响应验证
 - **[Critical]** webhook.js: 修复 userSessions 内存泄漏，添加会话过期机制

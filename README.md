@@ -209,6 +209,13 @@ docker-compose logs -f server
 tail -f logs/$(date +%Y-%m-%d).log
 ```
 
+## 文档
+
+- [架构设计](docs/architecture.md) - 系统架构、数据流、部署
+- [API 文档](docs/api.md) - 完整 API 接口说明
+- [贡献指南](CONTRIBUTING.md) - 开发流程、代码规范
+- [更新日志](CHANGELOG.md) - 版本变更记录
+
 ## License
 
 MIT
