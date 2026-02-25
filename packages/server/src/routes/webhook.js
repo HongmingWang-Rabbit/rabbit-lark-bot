@@ -75,9 +75,9 @@ router.post('/event', async (req, res) => {
     const msgType = event.message?.message_type;
     const senderId = event.sender?.sender_id?.user_id;
 
-    // 转发给注册的 AI Agents
+    // 转发给配置的 AI Agent（单 agent 模式）
     const apiBaseUrl = process.env.API_BASE_URL || `http://localhost:${process.env.PORT || 3456}`;
-    agentForwarder.forwardToAllAgents(event, apiBaseUrl).catch((err) => {
+    agentForwarder.forwardToOwnerAgent(event, apiBaseUrl).catch((err) => {
       logger.error('Agent forwarding failed', { error: err.message });
     });
 

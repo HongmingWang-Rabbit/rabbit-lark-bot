@@ -1,12 +1,15 @@
 /**
  * Agent Forwarder Service
  * 
- * Forwards incoming Lark messages to registered AI agents via webhook.
- * Agents receive messages in a standardized format and can respond via MCP or API.
+ * Forwards incoming Lark messages to the configured AI agent via webhook.
+ * Single-agent mode: one Rabbit Lark instance = one AI agent owner.
+ * 
+ * Configure via environment:
+ *   AGENT_WEBHOOK_URL - The agent's webhook endpoint
+ *   AGENT_API_KEY - Shared secret for signing (optional)
  */
 
 const logger = require('../utils/logger');
-const { pool } = require('../db');
 
 /**
  * Standard message format sent to agents
@@ -155,88 +158,69 @@ function generateSignature(payload, secret) {
   return hmac.digest('hex');
 }
 
-// ============ Agent Registration (Database) ============
+// ============ Single Agent Mode ============
 
 /**
- * Register a new agent webhook
- * @param {Object} agent - Agent configuration
+ * Get agent configuration from environment
+ * @returns {Object|null}
  */
-async function registerAgent(agent) {
-  const { name, webhook_url, api_key, enabled = true, filters = {} } = agent;
+function getAgentConfig() {
+  const webhookUrl = process.env.AGENT_WEBHOOK_URL;
+  if (!webhookUrl) {
+    return null;
+  }
   
-  const result = await pool.query(
-    `INSERT INTO agent_webhooks (name, webhook_url, api_key, enabled, filters, created_at, updated_at)
-     VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
-     ON CONFLICT (name) DO UPDATE SET
-       webhook_url = $2, api_key = $3, enabled = $4, filters = $5, updated_at = NOW()
-     RETURNING *`,
-    [name, webhook_url, api_key, enabled, JSON.stringify(filters)]
-  );
-  
-  return result.rows[0];
+  return {
+    webhookUrl,
+    apiKey: process.env.AGENT_API_KEY || '',
+    timeout: parseInt(process.env.AGENT_TIMEOUT_MS) || 30000,
+  };
 }
 
 /**
- * Get all enabled agents
- * @returns {Promise<Array>}
+ * Check if agent is configured
+ * @returns {boolean}
  */
-async function getEnabledAgents() {
-  const result = await pool.query(
-    'SELECT * FROM agent_webhooks WHERE enabled = true'
-  );
-  return result.rows;
+function isAgentConfigured() {
+  return !!process.env.AGENT_WEBHOOK_URL;
 }
 
 /**
- * Remove an agent
- * @param {string} name - Agent name
- */
-async function removeAgent(name) {
-  await pool.query('DELETE FROM agent_webhooks WHERE name = $1', [name]);
-}
-
-/**
- * Forward message to all registered agents
+ * Forward message to the configured agent
  * @param {Object} event - Raw Lark event
  * @param {string} apiBaseUrl - This server's base URL
  */
-async function forwardToAllAgents(event, apiBaseUrl) {
-  const agents = await getEnabledAgents();
+async function forwardToOwnerAgent(event, apiBaseUrl) {
+  const config = getAgentConfig();
   
-  if (agents.length === 0) {
-    logger.debug('No agents registered, skipping forward');
-    return;
+  if (!config) {
+    logger.debug('No agent configured (AGENT_WEBHOOK_URL not set), skipping forward');
+    return null;
   }
   
   const message = formatForAgent(event, apiBaseUrl);
   
-  // Forward to all agents in parallel
-  const results = await Promise.allSettled(
-    agents.map(agent => 
-      forwardToAgent(agent.webhook_url, message, { apiKey: agent.api_key })
-    )
-  );
-  
-  // Log results
-  results.forEach((result, i) => {
-    if (result.status === 'rejected') {
-      logger.warn('Agent forward failed', { 
-        agent: agents[i].name, 
-        error: result.reason.message 
-      });
-    }
-  });
-  
-  return results;
+  try {
+    const result = await forwardToAgent(config.webhookUrl, message, {
+      apiKey: config.apiKey,
+      timeout: config.timeout,
+    });
+    return result;
+  } catch (err) {
+    logger.error('Failed to forward to owner agent', { 
+      error: err.message,
+      webhookUrl: config.webhookUrl,
+    });
+    throw err;
+  }
 }
 
 module.exports = {
   formatForAgent,
   forwardToAgent,
-  forwardToAllAgents,
-  registerAgent,
-  getEnabledAgents,
-  removeAgent,
+  forwardToOwnerAgent,
+  getAgentConfig,
+  isAgentConfigured,
   generateSignature,
   BRIDGE_VERSION,
   CAPABILITIES,

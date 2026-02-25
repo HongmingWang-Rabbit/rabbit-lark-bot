@@ -137,38 +137,52 @@ docker-compose down
 
 ### 5. 接入你的 AI Agent
 
-**方式一：注册 Webhook（推荐）**
+**单 Agent 模式** — 一个 Rabbit Lark 实例绑定一个 AI Agent。
 
-Agent 提供一个 HTTP endpoint 接收消息：
+**步骤 1：配置 Agent Webhook**
 
-```bash
-curl -X POST http://localhost:3456/api/agent/register \
-  -H "Authorization: Bearer YOUR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "my-agent",
-    "webhook_url": "https://my-agent.com/lark-webhook",
-    "api_key": "optional-shared-secret"
-  }'
+在 `.env` 中设置你的 agent 接收消息的 endpoint：
+
+```env
+# Agent 接收消息的 webhook 地址
+AGENT_WEBHOOK_URL=https://your-agent.com/lark-webhook
+
+# 可选：共享密钥，用于验证消息签名
+AGENT_API_KEY=your_shared_secret
+
+# 本服务的公网地址（agent 回复时需要）
+API_BASE_URL=https://your-rabbit-server.com
 ```
 
-当用户在飞书发消息时，Server 会 POST 到你的 webhook_url。
+当飞书用户发消息时，Rabbit 会 POST 到你的 `AGENT_WEBHOOK_URL`。
 
-**方式二：使用 MCP（适用于 Claude/Clawdbot）**
+**步骤 2：Agent 侧接收消息**
 
-安装 MCP server 让 Agent 主动操作飞书：
+你的 agent 会收到这样的 POST 请求：
 
-```bash
-cd packages/mcp
-npm install
-npm link
-
-# 配置环境变量
-export RABBIT_LARK_API_URL=http://localhost:3456
-export RABBIT_LARK_API_KEY=your-api-key
+```json
+{
+  "source": { "bridge": "rabbit-lark-bot", "platform": "lark" },
+  "reply_via": {
+    "mcp": "rabbit-lark",
+    "api": "https://your-rabbit-server.com/api/agent/send"
+  },
+  "message_id": "om_xxx",
+  "chat_id": "oc_xxx",
+  "user": { "id": "ou_xxx" },
+  "content": { "type": "text", "text": "Hello!" }
+}
 ```
 
-在 Claude Desktop 或 Clawdbot 中配置 MCP：
+**步骤 3：Agent 回复（两种方式）**
+
+**方式 A：使用 MCP（推荐，适用于 Claude/Clawdbot）**
+
+```bash
+cd packages/mcp && npm install && npm link
+```
+
+在 Claude Desktop 或 Clawdbot 中配置：
 
 ```json
 {
@@ -176,12 +190,23 @@ export RABBIT_LARK_API_KEY=your-api-key
     "rabbit-lark": {
       "command": "rabbit-lark-mcp",
       "env": {
-        "RABBIT_LARK_API_URL": "http://localhost:3456",
+        "RABBIT_LARK_API_URL": "https://your-rabbit-server.com",
         "RABBIT_LARK_API_KEY": "your-api-key"
       }
     }
   }
 }
+```
+
+Agent 调用 `rabbit_lark_send` 工具即可回复。
+
+**方式 B：直接调用 API**
+
+```bash
+curl -X POST https://your-rabbit-server.com/api/agent/send \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"chat_id": "ou_xxx", "content": "Hello from AI!"}'
 ```
 
 ## API 接口
@@ -190,9 +215,7 @@ export RABBIT_LARK_API_KEY=your-api-key
 
 | 端点 | 方法 | 描述 |
 |------|------|------|
-| `/api/agent/register` | POST | 注册 Agent webhook |
-| `/api/agent/list` | GET | 列出已注册 Agent |
-| `/api/agent/:name` | DELETE | 移除 Agent |
+| `/api/agent/status` | GET | 检查 agent 配置状态 |
 | `/api/agent/send` | POST | 发送消息到飞书 |
 | `/api/agent/reply` | POST | 回复特定消息 |
 | `/api/agent/react` | POST | 添加表情回应 |

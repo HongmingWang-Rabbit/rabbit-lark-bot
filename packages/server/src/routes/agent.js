@@ -122,72 +122,20 @@ router.get('/user/:user_id', async (req, res) => {
   }
 });
 
-// ============ Agent Registration Management ============
-
 /**
- * POST /api/agent/register
- * Register a new agent webhook
+ * GET /api/agent/status
+ * Check if agent is configured
  */
-router.post('/register', async (req, res) => {
-  try {
-    const { name, webhook_url, api_key, description, filters } = req.body;
-    
-    if (!name || !webhook_url) {
-      return res.status(400).json({ error: 'name and webhook_url are required' });
-    }
-    
-    logger.info('Registering agent', { name, webhook_url });
-    
-    const agent = await agentForwarder.registerAgent({
-      name,
-      webhook_url,
-      api_key,
-      description,
-      filters,
-    });
-    
-    res.json({ success: true, agent });
-  } catch (err) {
-    logger.error('Agent registration failed', { error: err.message });
-    res.status(500).json({ error: err.message });
-  }
-});
-
-/**
- * GET /api/agent/list
- * List all registered agents
- */
-router.get('/list', async (req, res) => {
-  try {
-    const agents = await agentForwarder.getEnabledAgents();
-    
-    // 不返回 api_key
-    const safeAgents = agents.map(({ api_key, ...agent }) => agent);
-    
-    res.json({ success: true, agents: safeAgents });
-  } catch (err) {
-    logger.error('Agent list failed', { error: err.message });
-    res.status(500).json({ error: err.message });
-  }
-});
-
-/**
- * DELETE /api/agent/:name
- * Remove an agent registration
- */
-router.delete('/:name', async (req, res) => {
-  try {
-    const { name } = req.params;
-    
-    logger.info('Removing agent', { name });
-    
-    await agentForwarder.removeAgent(name);
-    
-    res.json({ success: true });
-  } catch (err) {
-    logger.error('Agent removal failed', { error: err.message });
-    res.status(500).json({ error: err.message });
-  }
+router.get('/status', (req, res) => {
+  const configured = agentForwarder.isAgentConfigured();
+  const config = agentForwarder.getAgentConfig();
+  
+  res.json({
+    success: true,
+    configured,
+    // 不暴露完整 URL，只显示是否配置
+    webhook_configured: !!config?.webhookUrl,
+  });
 });
 
 /**
