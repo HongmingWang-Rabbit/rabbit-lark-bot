@@ -8,15 +8,38 @@ source "${SCRIPT_DIR}/../lib/feishu.sh"
 APP_TOKEN="${REMINDER_APP_TOKEN}"
 TABLE_ID="${REMINDER_TABLE_ID}"
 
-# 添加催办任务
+# 根据邮箱获取用户 open_id
+get_user_id_by_email() {
+    local email="$1"
+    local token=$(get_token)
+    
+    local result=$(curl -s -X POST "https://open.feishu.cn/open-apis/contact/v3/users/batch_get_id" \
+        -H "Authorization: Bearer ${token}" \
+        -H 'Content-Type: application/json' \
+        -d "{\"emails\": [\"${email}\"]}")
+    
+    echo "$result" | jq -r '.data.user_list[0].user_id // empty'
+}
+
+# 添加催办任务（支持邮箱或 user_id）
 add_reminder() {
     local task_name="$1"
-    local target="$2"
+    local target="$2"  # 可以是邮箱或 user_id
     local deadline="$3"
     local note="${4:-}"
     
     local token=$(get_token)
     local now_ms=$(($(date +%s) * 1000))
+    
+    # 如果 target 包含 @，认为是邮箱，转换为 user_id
+    local user_id="$target"
+    if [[ "$target" == *"@"* ]]; then
+        user_id=$(get_user_id_by_email "$target")
+        if [ -z "$user_id" ]; then
+            echo '{"error": "无法找到用户: '"$target"'"}'
+            return 1
+        fi
+    fi
     
     if [ -z "$deadline" ]; then
         local deadline_ms=$((($(date +%s) + 86400 * 3) * 1000))
@@ -30,7 +53,7 @@ add_reminder() {
         -d "{
             \"fields\": {
                 \"任务名称\": \"${task_name}\",
-                \"催办对象\": \"${target}\",
+                \"催办对象\": [{\"id\": \"${user_id}\"}],
                 \"截止时间\": ${deadline_ms},
                 \"状态\": \"待办\",
                 \"备注\": \"${note}\",
@@ -129,7 +152,7 @@ case "$1" in
             "[\(.record_id)] " + 
             (if .fields["任务名称"] | type == "array" then .fields["任务名称"][0].text else .fields["任务名称"] // "?" end) +
             " → " +
-            (if .fields["催办对象"] | type == "array" then .fields["催办对象"][0].text else .fields["催办对象"] // "?" end) +
+            (if .fields["催办对象"] | type == "array" then .fields["催办对象"][0].name // .fields["催办对象"][0].id else .fields["催办对象"] // "?" end) +
             " [" +
             (if .fields["状态"] | type == "array" then .fields["状态"][0].text else .fields["状态"] // "?" end) +
             "]"'
@@ -141,7 +164,7 @@ case "$1" in
             "[\(.record_id)] " +
             (if .fields["任务名称"] | type == "array" then .fields["任务名称"][0].text else .fields["任务名称"] // "?" end) +
             " → " +
-            (if .fields["催办对象"] | type == "array" then .fields["催办对象"][0].text else .fields["催办对象"] // "?" end)'
+            (if .fields["催办对象"] | type == "array" then .fields["催办对象"][0].name // .fields["催办对象"][0].id else .fields["催办对象"] // "?" end)'
         ;;
     complete)
         if [ -z "$2" ]; then

@@ -98,3 +98,32 @@ send_message() {
             \"content\": \"{\\\"text\\\": \\\"${text}\\\"}\"
         }"
 }
+
+# 发送私信给用户
+# 用法: send_user_message <user_id> <message_text>
+send_user_message() {
+    local user_id="$1"
+    local text="$2"
+    local token=$(get_token)
+    
+    curl -s -X POST "${FEISHU_BASE_URL}/im/v1/messages?receive_id_type=user_id" \
+        -H "Authorization: Bearer ${token}" \
+        -H 'Content-Type: application/json' \
+        -d "{
+            \"receive_id\": \"${user_id}\",
+            \"msg_type\": \"text\",
+            \"content\": \"{\\\"text\\\": \\\"${text}\\\"}\"
+        }"
+}
+
+# 根据邮箱获取用户信息
+# 用法: get_user_by_email <email>
+get_user_by_email() {
+    local email="$1"
+    local token=$(get_token)
+    
+    curl -s -X POST "${FEISHU_BASE_URL}/contact/v3/users/batch_get_id" \
+        -H "Authorization: Bearer ${token}" \
+        -H 'Content-Type: application/json' \
+        -d "{\"emails\": [\"${email}\"]}"
+}
