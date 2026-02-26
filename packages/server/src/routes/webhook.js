@@ -5,6 +5,8 @@ const feishu = require('../feishu/client');
 const { admins } = require('../db');
 const usersDb = require('../db/users');
 const { can } = require('../features');
+const { detectIntent } = require('../utils/intentDetector');
+const { buildMenu } = require('../utils/menuBuilder');
 const reminderService = require('../services/reminder');
 const logger = require('../utils/logger');
 const agentForwarder = require('../services/agentForwarder');
@@ -149,6 +151,26 @@ router.post('/event', async (req, res) => {
       } catch (provisionErr) {
         logger.warn('User auto-provision failed', { senderId, error: provisionErr.message });
       }
+    }
+
+    // 解析消息文本（用于意图检测）
+    let messageText = '';
+    try {
+      const rawContent = JSON.parse(event.message?.content || '{}');
+      messageText = rawContent.text || '';
+    } catch (_) {}
+
+    // 意图检测：greeting 或 menu → 发送动态菜单，跳过 AI
+    const intent = detectIntent(messageText);
+    if (intent === 'greeting' || intent === 'menu') {
+      logger.info('Intent detected, sending menu', { senderId, intent });
+      if (chatId) {
+        const menuMsg = buildMenu(user || { role: 'user', configs: {} }, { isGreeting: intent === 'greeting' });
+        feishu.sendMessage(chatId, menuMsg, 'chat_id').catch((err) => {
+          logger.error('Failed to send menu', { error: err.message });
+        });
+      }
+      return res.json({ success: true });
     }
 
     // 权限检查：ai_chat
