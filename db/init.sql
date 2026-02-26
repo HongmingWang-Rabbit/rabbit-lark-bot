@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     creator_id       VARCHAR(255),           -- feishu_user_id of creator (on_xxx)
     assignee_id      VARCHAR(255) NOT NULL,  -- feishu_user_id of assignee (for lookup)
     assignee_open_id VARCHAR(255),           -- open_id of assignee (ou_xxx, for messaging)
+    reporter_open_id VARCHAR(255),           -- open_id of reporter/creator (ou_xxx), notified on completion
     deadline         TIMESTAMPTZ,
     status           VARCHAR(20) NOT NULL DEFAULT 'pending', -- pending | completed
     proof            TEXT,

@@ -355,7 +355,8 @@ async function replyToChat(chatId, messageId, text) {
  * 完成任务并通知用户
  */
 async function completeTaskAndReply(task, proof, user, senderId, chatId, messageId) {
-  await reminderService.completeTask(task.id, proof || '', senderId);
+  const completerName = user?.name || user?.email || null;
+  await reminderService.completeTask(task.id, proof || '', senderId, completerName);
   let reply = `✅ 已完成任务「${task.title}」！`;
   if (proof) reply += `\n📎 证明：${proof}`;
   await replyToChat(chatId, messageId, reply);
@@ -531,6 +532,7 @@ async function handleCuibanCommand({ intent, text, user, senderId, chatId, messa
       assigneeName: targetUser.name || null,
       deadline,
       creatorId: senderId,
+      reporterOpenId: openId || null,  // 报告对象：催办发起人，任务完成时收到通知
     });
 
     const deadlineStr = deadline || `默认 ${reminderService.DEFAULT_DEADLINE_DAYS} 天`;

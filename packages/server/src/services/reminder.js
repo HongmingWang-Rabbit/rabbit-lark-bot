@@ -57,24 +57,25 @@ async function getAllTasks(limit = 100) {
  * Create a task and notify the assignee via Feishu message.
  *
  * @param {object} params
- * @param {string} params.title            - Task name
- * @param {string} params.assigneeId       - Assignee feishu_user_id (on_xxx)
- * @param {string} [params.assigneeOpenId] - Assignee open_id (ou_xxx) for messaging
- * @param {string} [params.assigneeName]   - Assignee display name (for confirmation msg)
- * @param {string} [params.deadline]       - Deadline as YYYY-MM-DD string
- * @param {string} [params.note]           - Optional note
- * @param {string} [params.creatorId]      - Creator feishu_user_id (for audit)
+ * @param {string} params.title              - Task name
+ * @param {string} params.assigneeId         - Assignee feishu_user_id (on_xxx)
+ * @param {string} [params.assigneeOpenId]   - Assignee open_id (ou_xxx) for messaging
+ * @param {string} [params.assigneeName]     - Assignee display name (for confirmation msg)
+ * @param {string} [params.deadline]         - Deadline as YYYY-MM-DD string
+ * @param {string} [params.note]             - Optional note
+ * @param {string} [params.creatorId]        - Creator feishu_user_id (for audit)
+ * @param {string} [params.reporterOpenId]   - Reporter open_id (ou_xxx), notified when task completes
  */
-async function createTask({ title, assigneeId, assigneeOpenId, assigneeName, deadline, note, creatorId }) {
+async function createTask({ title, assigneeId, assigneeOpenId, assigneeName, deadline, note, creatorId, reporterOpenId }) {
   const deadlineDate = deadline
     ? new Date(deadline)
     : new Date(Date.now() + DEFAULT_DEADLINE_DAYS * MS_PER_DAY);
 
   const result = await pool.query(
-    `INSERT INTO tasks (title, assignee_id, assignee_open_id, deadline, note, creator_id)
-     VALUES ($1, $2, $3, $4, $5, $6)
+    `INSERT INTO tasks (title, assignee_id, assignee_open_id, reporter_open_id, deadline, note, creator_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
      RETURNING *`,
-    [title, assigneeId, assigneeOpenId || null, deadlineDate, note || null, creatorId || null]
+    [title, assigneeId, assigneeOpenId || null, reporterOpenId || null, deadlineDate, note || null, creatorId || null]
   );
   const task = result.rows[0];
 
@@ -110,13 +111,14 @@ async function createTask({ title, assigneeId, assigneeOpenId, assigneeName, dea
 }
 
 /**
- * Mark a task as completed.
+ * Mark a task as completed, then notify the reporter (task creator) via Feishu DM.
  *
- * @param {number} taskId   - Task ID (integer)
- * @param {string} [proof]  - Proof URL
- * @param {string} [userId] - Completer's feishu_user_id (for audit)
+ * @param {number} taskId          - Task ID (integer)
+ * @param {string} [proof]         - Proof URL or description
+ * @param {string} [userId]        - Completer's feishu_user_id (for audit)
+ * @param {string} [completerName] - Completer's display name (for reporter notification)
  */
-async function completeTask(taskId, proof, userId) {
+async function completeTask(taskId, proof, userId, completerName) {
   const result = await pool.query(
     `UPDATE tasks
      SET status = 'completed', proof = $2, completed_at = NOW()
@@ -124,6 +126,8 @@ async function completeTask(taskId, proof, userId) {
      RETURNING *`,
     [taskId, proof || null]
   );
+
+  const task = result.rows[0];
 
   if (userId) {
     audit
@@ -137,8 +141,34 @@ async function completeTask(taskId, proof, userId) {
       .catch(() => {});
   }
 
+  // Notify reporter (task creator) that the task is done
+  if (task && task.reporter_open_id) {
+    const completedAt = new Date().toLocaleString('zh-CN', {
+      timeZone: 'Asia/Shanghai',
+      month: 'long',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+    const whoStr = completerName || '执行人';
+    let notifyMsg =
+      `✅ 催办任务已完成！\n\n` +
+      `📋 「${task.title}」\n` +
+      `👤 完成人：${whoStr}\n` +
+      `🕐 完成时间：${completedAt}`;
+    if (proof) notifyMsg += `\n📎 完成证明：${proof}`;
+
+    feishu.sendMessage(task.reporter_open_id, notifyMsg, 'open_id').catch((err) => {
+      logger.warn('Failed to notify reporter of task completion', {
+        error: err.message,
+        reporterOpenId: task.reporter_open_id,
+        taskId,
+      });
+    });
+  }
+
   logger.info('Task completed', { id: taskId, proof: !!proof });
-  return result.rows[0];
+  return task;
 }
 
 /**
