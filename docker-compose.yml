@@ -70,6 +70,8 @@ services:
       NEXT_PUBLIC_API_URL: http://server:3456/api
       NEXT_PUBLIC_ADMIN_PASSWORD: ${NEXT_PUBLIC_ADMIN_PASSWORD:-}
       NEXT_PUBLIC_API_KEY: ${NEXT_PUBLIC_API_KEY:-}
+      # Needed for Next.js standalone to bind correctly in Docker
+      HOSTNAME: "0.0.0.0"
     ports:
       - "127.0.0.1:3000:3000"
     healthcheck:
