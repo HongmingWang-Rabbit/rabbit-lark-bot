@@ -1,20 +1,50 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import useSWR, { mutate } from 'swr';
-import { api, Task, CreateTaskParams } from '@/lib/api';
+import { api, Task, User, CreateTaskParams } from '@/lib/api';
+
+// ── helpers ──────────────────────────────────────────────────────────────────
+
+/** Build open_id → display name map from the users list */
+function useUserMap() {
+  const { data: users } = useSWR<User[]>('/users', api.getUsers);
+  return useMemo(() => {
+    const map = new Map<string, string>();
+    users?.forEach((u) => {
+      if (u.openId) map.set(u.openId, u.name || u.email || u.openId.slice(0, 12) + '…');
+    });
+    return map;
+  }, [users]);
+}
+
+function resolveName(openId: string | null, userMap: Map<string, string>) {
+  if (!openId) return '-';
+  return userMap.get(openId) || openId.slice(0, 16) + '…';
+}
+
+// ── page ─────────────────────────────────────────────────────────────────────
 
 export default function TasksPage() {
   const { data: tasks, error, isLoading } = useSWR<Task[]>('/tasks', api.getTasks);
+  const userMap = useUserMap();
   const [showForm, setShowForm] = useState(false);
 
   if (isLoading) return <LoadingState />;
   if (error) return <ErrorState message={error.message} />;
 
+  const pending   = (tasks ?? []).filter(t => t.status === 'pending');
+  const completed = (tasks ?? []).filter(t => t.status === 'completed');
+
   return (
     <div>
       <div className="flex justify-between items-center mb-6">
-        <h2 className="text-2xl font-bold">催办任务</h2>
+        <div>
+          <h2 className="text-2xl font-bold">催办任务</h2>
+          <p className="text-sm text-gray-500 mt-1">
+            待办 {pending.length} / 已完成 {completed.length}
+          </p>
+        </div>
         <button
           onClick={() => setShowForm(!showForm)}
           className="bg-blue-500 text-white px-4 py-2 rounded-lg hover:bg-blue-600 transition-colors"
@@ -32,12 +62,12 @@ export default function TasksPage() {
         />
       )}
 
-      <TaskTable tasks={tasks || []} />
+      <TaskTable tasks={tasks ?? []} userMap={userMap} />
     </div>
   );
 }
 
-// ============ 组件 ============
+// ── sub-components ────────────────────────────────────────────────────────────
 
 function LoadingState() {
   return (
@@ -53,38 +83,35 @@ function ErrorState({ message }: { message: string }) {
     <div className="text-center py-12">
       <p className="text-red-500">❌ 加载失败</p>
       <p className="text-sm text-gray-500 mt-2">{message}</p>
-      <button
-        onClick={() => mutate('/tasks')}
-        className="mt-4 text-blue-500 hover:underline"
-      >
+      <button onClick={() => mutate('/tasks')} className="mt-4 text-blue-500 hover:underline">
         重试
       </button>
     </div>
   );
 }
 
-function TaskTable({ tasks }: { tasks: Task[] }) {
+function TaskTable({ tasks, userMap }: { tasks: Task[]; userMap: Map<string, string> }) {
   return (
-    <div className="bg-white rounded-lg shadow overflow-hidden">
-      <table className="w-full">
+    <div className="bg-white rounded-lg shadow overflow-x-auto">
+      <table className="w-full min-w-[700px]">
         <thead className="bg-gray-50">
           <tr>
             <th className="px-4 py-3 text-left text-sm font-medium text-gray-500">任务名称</th>
             <th className="px-4 py-3 text-left text-sm font-medium text-gray-500">催办对象</th>
+            <th className="px-4 py-3 text-left text-sm font-medium text-gray-500">报告对象</th>
             <th className="px-4 py-3 text-left text-sm font-medium text-gray-500">状态</th>
             <th className="px-4 py-3 text-left text-sm font-medium text-gray-500">截止时间</th>
+            <th className="px-4 py-3 text-left text-sm font-medium text-gray-500">提醒间隔</th>
             <th className="px-4 py-3 text-left text-sm font-medium text-gray-500">操作</th>
           </tr>
         </thead>
         <tbody className="divide-y">
           {tasks.map((task) => (
-            <TaskRow key={task.id} task={task} />
+            <TaskRow key={task.id} task={task} userMap={userMap} />
           ))}
           {tasks.length === 0 && (
             <tr>
-              <td colSpan={5} className="px-4 py-8 text-center text-gray-500">
-                暂无任务
-              </td>
+              <td colSpan={7} className="px-4 py-8 text-center text-gray-500">暂无任务</td>
             </tr>
           )}
         </tbody>
@@ -93,14 +120,14 @@ function TaskTable({ tasks }: { tasks: Task[] }) {
   );
 }
 
-function TaskRow({ task }: { task: Task }) {
+function TaskRow({ task, userMap }: { task: Task; userMap: Map<string, string> }) {
   const [loading, setLoading] = useState(false);
 
   const handleComplete = async () => {
     if (!confirm('确认标记为完成？')) return;
     setLoading(true);
     try {
-      await api.completeTask(task.id, {});
+      await api.completeTask(String(task.id), {});
       mutate('/tasks');
     } catch (err) {
       alert(err instanceof Error ? err.message : '操作失败');
@@ -113,7 +140,7 @@ function TaskRow({ task }: { task: Task }) {
     if (!confirm('确认删除此任务？')) return;
     setLoading(true);
     try {
-      await api.deleteTask(task.id);
+      await api.deleteTask(String(task.id));
       mutate('/tasks');
     } catch (err) {
       alert(err instanceof Error ? err.message : '操作失败');
@@ -122,22 +149,42 @@ function TaskRow({ task }: { task: Task }) {
     }
   };
 
+  const assigneeName = resolveName(task.assignee_open_id, userMap);
+  const reporterName = resolveName(task.reporter_open_id, userMap);
+
   return (
     <tr className={`hover:bg-gray-50 ${loading ? 'opacity-50' : ''}`}>
-      <td className="px-4 py-3">{task.name}</td>
-      <td className="px-4 py-3 text-gray-600">{task.target}</td>
+      <td className="px-4 py-3 font-medium">
+        {task.title}
+        {task.note && <p className="text-xs text-gray-400 mt-0.5">{task.note}</p>}
+      </td>
+      <td className="px-4 py-3 text-gray-600">{assigneeName}</td>
+      <td className="px-4 py-3 text-gray-600">
+        {task.reporter_open_id ? (
+          <span title={task.reporter_open_id}>{reporterName}</span>
+        ) : (
+          <span className="text-gray-300">—</span>
+        )}
+      </td>
       <td className="px-4 py-3">
-        <StatusBadge status={task.status} />
+        <StatusBadge status={task.status} completedAt={task.completed_at} />
       </td>
       <td className="px-4 py-3 text-sm text-gray-500">
-        {task.deadline ? new Date(task.deadline).toLocaleDateString('zh-CN') : '-'}
+        {task.deadline
+          ? new Date(task.deadline).toLocaleDateString('zh-CN')
+          : <span className="text-gray-300">—</span>}
       </td>
-      <td className="px-4 py-3">
-        {task.status === '待办' && (
+      <td className="px-4 py-3 text-sm text-gray-500">
+        {task.reminder_interval_hours > 0
+          ? `每 ${task.reminder_interval_hours}h`
+          : <span className="text-gray-300">关闭</span>}
+      </td>
+      <td className="px-4 py-3 flex gap-3">
+        {task.status === 'pending' && (
           <button
             onClick={handleComplete}
             disabled={loading}
-            className="text-green-600 hover:text-green-800 mr-3 disabled:opacity-50"
+            className="text-green-600 hover:text-green-800 disabled:opacity-50"
           >
             完成
           </button>
@@ -154,23 +201,44 @@ function TaskRow({ task }: { task: Task }) {
   );
 }
 
+function StatusBadge({ status, completedAt }: { status: Task['status']; completedAt: string | null }) {
+  if (status === 'completed') {
+    return (
+      <span className="px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800">
+        ✅ 已完成
+      </span>
+    );
+  }
+  return (
+    <span className="px-2 py-1 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800">
+      ⏳ 待办
+    </span>
+  );
+}
+
+// ── create form ───────────────────────────────────────────────────────────────
+
 function TaskForm({ onSuccess }: { onSuccess: () => void }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [form, setForm] = useState<CreateTaskParams>({
-    taskName: '',
+    title: '',
     targetEmail: '',
+    reporterEmail: '',
     deadline: '',
     note: '',
+    reminderIntervalHours: 24,
   });
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     setError(null);
-
     try {
-      await api.createTask(form);
+      await api.createTask({
+        ...form,
+        reminderIntervalHours: form.reminderIntervalHours ?? 24,
+      });
       onSuccess();
     } catch (err) {
       setError(err instanceof Error ? err.message : '创建失败');
@@ -179,90 +247,76 @@ function TaskForm({ onSuccess }: { onSuccess: () => void }) {
     }
   };
 
+  const field = (id: keyof CreateTaskParams) => ({
+    value: String(form[id] ?? ''),
+    onChange: (e: React.ChangeEvent<HTMLInputElement>) =>
+      setForm({ ...form, [id]: e.target.value }),
+  });
+
   return (
     <form onSubmit={handleSubmit} className="bg-white rounded-lg shadow p-6 mb-6">
       {error && (
         <div className="mb-4 p-3 bg-red-50 text-red-700 rounded-lg text-sm">{error}</div>
       )}
-
       <div className="grid grid-cols-2 gap-4">
         <div>
-          <label htmlFor="taskName" className="block text-sm font-medium text-gray-700 mb-1">
-            任务名称 *
-          </label>
-          <input
-            id="taskName"
-            type="text"
-            required
-            value={form.taskName}
-            onChange={(e) => setForm({ ...form, taskName: e.target.value })}
+          <label className="block text-sm font-medium text-gray-700 mb-1">任务名称 *</label>
+          <input type="text" required {...field('title')}
             className="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            placeholder="例：提交周报"
+            placeholder="例：提交季度报告"
           />
         </div>
         <div>
-          <label htmlFor="targetEmail" className="block text-sm font-medium text-gray-700 mb-1">
-            催办对象邮箱 *
-          </label>
-          <input
-            id="targetEmail"
-            type="email"
-            required
-            value={form.targetEmail}
-            onChange={(e) => setForm({ ...form, targetEmail: e.target.value })}
+          <label className="block text-sm font-medium text-gray-700 mb-1">催办对象邮箱 *</label>
+          <input type="email" required {...field('targetEmail')}
             className="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            placeholder="someone@company.com"
+            placeholder="assignee@company.com"
           />
         </div>
         <div>
-          <label htmlFor="deadline" className="block text-sm font-medium text-gray-700 mb-1">
-            截止时间
+          <label className="block text-sm font-medium text-gray-700 mb-1">
+            报告对象邮箱
+            <span className="ml-1 text-gray-400 font-normal text-xs">（任务完成时收到通知）</span>
           </label>
-          <input
-            id="deadline"
-            type="date"
-            value={form.deadline}
-            onChange={(e) => setForm({ ...form, deadline: e.target.value })}
+          <input type="email" {...field('reporterEmail')}
+            className="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            placeholder="reporter@company.com（可选）"
+          />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">截止时间</label>
+          <input type="date" {...field('deadline')}
             className="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
           />
         </div>
         <div>
-          <label htmlFor="note" className="block text-sm font-medium text-gray-700 mb-1">
-            备注
+          <label className="block text-sm font-medium text-gray-700 mb-1">备注</label>
+          <input type="text" {...field('note')}
+            className="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            placeholder="可选说明"
+          />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">
+            提醒间隔（小时）
+            <span className="ml-1 text-gray-400 font-normal text-xs">（0 = 关闭）</span>
           </label>
           <input
-            id="note"
-            type="text"
-            value={form.note}
-            onChange={(e) => setForm({ ...form, note: e.target.value })}
+            type="number" min={0} max={168}
+            value={form.reminderIntervalHours ?? 24}
+            onChange={(e) => setForm({ ...form, reminderIntervalHours: Number(e.target.value) })}
             className="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
           />
         </div>
       </div>
-
       <div className="mt-4">
         <button
-          type="submit"
-          disabled={loading}
+          type="submit" disabled={loading}
           className="bg-blue-500 text-white px-6 py-2 rounded-lg hover:bg-blue-600 disabled:opacity-50 transition-colors"
         >
           {loading ? '创建中...' : '创建任务'}
         </button>
       </div>
     </form>
-  );
-}
-
-function StatusBadge({ status }: { status: Task['status'] }) {
-  const styles: Record<Task['status'], string> = {
-    待办: 'bg-yellow-100 text-yellow-800',
-    进行中: 'bg-blue-100 text-blue-800',
-    已完成: 'bg-green-100 text-green-800',
-  };
-
-  return (
-    <span className={`px-2 py-1 rounded-full text-xs font-medium ${styles[status] || 'bg-gray-100'}`}>
-      {status}
-    </span>
   );
 }

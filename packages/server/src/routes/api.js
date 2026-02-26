@@ -47,7 +47,7 @@ router.get('/tasks', async (req, res) => {
 // 创建任务（通过邮箱查找被催办人）
 router.post('/tasks', async (req, res) => {
   try {
-    const { title, targetEmail, deadline, note, creatorId, reporterOpenId, reminderIntervalHours } = req.body;
+    const { title, targetEmail, deadline, note, creatorId, reporterOpenId, reporterEmail, reminderIntervalHours } = req.body;
 
     if (!title || !targetEmail) {
       return res.status(400).json({ error: '任务名称和目标用户必填' });
@@ -59,6 +59,13 @@ router.post('/tasks', async (req, res) => {
       return res.status(400).json({ error: `找不到用户: ${targetEmail}（请确认用户已发送过飞书消息）` });
     }
 
+    // 解析报告对象 open_id：优先用直接传入的，否则按邮箱查找
+    let resolvedReporterOpenId = reporterOpenId || null;
+    if (!resolvedReporterOpenId && reporterEmail) {
+      const reporterUser = await usersDb.findByEmail(reporterEmail);
+      resolvedReporterOpenId = reporterUser?.open_id || null;
+    }
+
     const task = await reminderService.createTask({
       title,
       assigneeId: targetUser.feishu_user_id || targetUser.open_id,
@@ -67,7 +74,7 @@ router.post('/tasks', async (req, res) => {
       deadline,
       note,
       creatorId,
-      reporterOpenId: reporterOpenId || null,
+      reporterOpenId: resolvedReporterOpenId,
       reminderIntervalHours: reminderIntervalHours !== undefined ? Number(reminderIntervalHours) : undefined,
     });
 

@@ -1,22 +1,29 @@
 // ============ 类型定义 ============
 
 export interface Task {
-  id: string;
-  name: string;
-  target: string;
-  status: '待办' | '进行中' | '已完成';
-  deadline: number | null;
+  id: number;
+  title: string;
+  creator_id: string | null;
+  assignee_id: string | null;
+  assignee_open_id: string | null;
+  reporter_open_id: string | null;   // person notified on completion
+  deadline: string | null;           // ISO date string
+  status: 'pending' | 'completed';
+  reminder_interval_hours: number;
+  last_reminded_at: string | null;
   proof: string | null;
-  note: string;
-  createdAt: number;
+  note: string | null;
+  created_at: string;
+  completed_at: string | null;
 }
 
 export interface CreateTaskParams {
-  taskName: string;
+  title: string;
   targetEmail: string;
+  reporterEmail?: string;            // person to notify on completion (optional)
   deadline?: string;
   note?: string;
-  creatorId?: string;
+  reminderIntervalHours?: number;
 }
 
 export interface Admin {
@@ -135,7 +142,7 @@ export const api = {
   getTasks: () => fetchAPI<Task[]>('/tasks'),
 
   createTask: (data: CreateTaskParams) =>
-    fetchAPI<{ success: boolean; record: unknown }>('/tasks', {
+    fetchAPI<{ success: boolean; task: Task }>('/tasks', {
       method: 'POST',
       body: JSON.stringify(data),
     }),
