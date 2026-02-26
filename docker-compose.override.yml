@@ -1,0 +1,10 @@
+services:
+  server:
+    environment:
+      ENABLE_BUILTIN_BOT: "false"
+      AGENT_WEBHOOK_URL: ${AGENT_WEBHOOK_URL}
+      AGENT_TIMEOUT_MS: ${AGENT_TIMEOUT_MS:-30000}
+      API_BASE_URL: ${API_BASE_URL}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      NODE_ENV: ${NODE_ENV:-production}
+      FEISHU_ENCRYPT_KEY: ${FEISHU_ENCRYPT_KEY}

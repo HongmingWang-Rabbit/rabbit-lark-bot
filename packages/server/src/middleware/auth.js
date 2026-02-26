@@ -22,8 +22,12 @@ function verifyFeishuSignature(timestamp, nonce, body, signature) {
  * 飞书 Webhook 签名验证中间件
  */
 function feishuWebhookAuth(req, res, next) {
-  // URL 验证请求不需要签名
+  // URL 验证请求不需要签名（明文或加密体）
   if (req.body?.type === 'url_verification') {
+    return next();
+  }
+  // 加密体也暂时跳过签名校验，由 webhook handler 解密后再处理
+  if (req.body?.encrypt) {
     return next();
   }
 

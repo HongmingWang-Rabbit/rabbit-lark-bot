@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const express = require('express');
 const router = express.Router();
 const feishu = require('../feishu/client');
@@ -5,6 +6,21 @@ const { admins } = require('../db');
 const reminderService = require('../services/reminder');
 const logger = require('../utils/logger');
 const agentForwarder = require('../services/agentForwarder');
+
+/**
+ * Decrypt Feishu AES-256-CBC encrypted payload.
+ * Key = SHA256(FEISHU_ENCRYPT_KEY), IV = first 16 bytes of base64-decoded data.
+ */
+function decryptFeishuPayload(encryptStr, encryptKey) {
+  const key = crypto.createHash('sha256').update(encryptKey).digest();
+  const buf = Buffer.from(encryptStr, 'base64');
+  const iv = buf.subarray(0, 16);
+  const ciphertext = buf.subarray(16);
+  const decipher = crypto.createDecipheriv('aes-256-cbc', key, iv);
+  let decrypted = decipher.update(ciphertext, null, 'utf8');
+  decrypted += decipher.final('utf8');
+  return JSON.parse(decrypted);
+}
 
 // ============ 用户会话管理 ============
 
@@ -56,29 +72,79 @@ function deleteSession(userId) {
   userSessions.delete(userId);
 }
 
+// ============ 事件去重 ============
+
+const processedEventIds = new Map(); // eventId -> timestamp
+const EVENT_DEDUP_TTL_MS = 5 * 60 * 1000; // 5 min
+
+function isDuplicateEvent(eventId) {
+  if (!eventId) return false;
+  if (processedEventIds.has(eventId)) return true;
+  processedEventIds.set(eventId, Date.now());
+  // Clean up old entries
+  if (processedEventIds.size > 1000) {
+    const cutoff = Date.now() - EVENT_DEDUP_TTL_MS;
+    for (const [id, ts] of processedEventIds) {
+      if (ts < cutoff) processedEventIds.delete(id);
+    }
+  }
+  return false;
+}
+
 // ============ Webhook 路由 ============
 
 router.post('/event', async (req, res) => {
-  const data = req.body;
-  logger.debug('Webhook event received', {
-    eventType: data.header?.event_type || data.type,
-  });
+  let data = req.body;
 
-  // URL 验证
+  // Decrypt if Feishu sent an encrypted payload
+  if (data.encrypt && process.env.FEISHU_ENCRYPT_KEY) {
+    try {
+      data = decryptFeishuPayload(data.encrypt, process.env.FEISHU_ENCRYPT_KEY);
+      logger.info('Webhook decrypted payload', { eventType: data.header?.event_type || data.type });
+    } catch (err) {
+      logger.error('Failed to decrypt Feishu payload', { error: err.message });
+      return res.status(400).json({ error: 'Decryption failed' });
+    }
+  } else {
+    logger.debug('Webhook event received', { eventType: data.header?.event_type || data.type });
+  }
+
+  // URL 验证 (v1: data.type, v2: data.header.event_type)
   if (data.type === 'url_verification') {
+    logger.info('Challenge v1', { challenge: data.challenge });
     return res.json({ challenge: data.challenge });
+  }
+  if (data.schema === '2.0' && data.header?.event_type === 'url_verification') {
+    logger.info('Challenge v2', { challenge: data.event?.challenge });
+    return res.json({ challenge: data.event?.challenge });
   }
 
   // 处理消息事件
   if (data.header?.event_type === 'im.message.receive_v1') {
     const event = data.event;
+    const eventId = data.header?.event_id;
     const msgType = event.message?.message_type;
     const senderId = event.sender?.sender_id?.user_id;
 
+    // 去重：Feishu 有时会重复投递同一事件
+    if (isDuplicateEvent(eventId)) {
+      logger.debug('Duplicate event ignored', { eventId });
+      return res.json({ success: true });
+    }
+
     // 转发给配置的 AI Agent（单 agent 模式）
     const apiBaseUrl = process.env.API_BASE_URL || `http://localhost:${process.env.PORT || 3456}`;
-    agentForwarder.forwardToOwnerAgent(event, apiBaseUrl).catch((err) => {
+    agentForwarder.forwardToOwnerAgent(event, apiBaseUrl).catch(async (err) => {
       logger.error('Agent forwarding failed', { error: err.message });
+      // 通知用户转发失败
+      const chatId = event.message?.chat_id;
+      if (chatId) {
+        try {
+          await feishu.sendMessage(chatId, '⚠️ 消息处理失败，请稍后重试。', 'chat_id');
+        } catch (sendErr) {
+          logger.error('Failed to send error message to user', { error: sendErr.message });
+        }
+      }
     });
 
     // 内置的催办功能（可选，保留向后兼容）
