@@ -2,7 +2,6 @@ const crypto = require('crypto');
 const express = require('express');
 const router = express.Router();
 const feishu = require('../feishu/client');
-const { admins } = require('../db');
 const usersDb = require('../db/users');
 const { resolveFeatures } = require('../features');
 const { detectIntent } = require('../utils/intentDetector');
@@ -272,217 +271,9 @@ router.post('/event', async (req, res) => {
   res.json({ success: true });
 });
 
-// ============ 消息处理 ============
-
-/**
- * 处理用户消息主入口
- */
-async function handleUserMessage(userId, text) {
-  logger.info('Message received', { userId, textLength: text.length });
-
-  const isAdminUser = await admins.isAdmin(userId, null);
-  const lowerText = text.toLowerCase().trim();
-  const links = extractLinks(text);
-
-  // Admin 命令
-  if (isAdminUser) {
-    const handled = await handleAdminCommand(userId, lowerText);
-    if (handled) return;
-  }
-
-  // 普通用户命令
-  const handled = await handleUserCommand(userId, lowerText, links);
-  if (handled) return;
-
-  // 处理会话上下文（数字选择等）
-  const sessionHandled = await handleSessionContext(userId, lowerText, links);
-  if (sessionHandled) return;
-
-  // 发送帮助信息
-  await sendHelpMessage(userId, isAdminUser);
-}
-
-/**
- * 从文本中提取链接
- */
-function extractLinks(text) {
-  return text.match(/(https?:\/\/[^\s]+)/g) || [];
-}
-
-// ============ Admin 命令处理 ============
-
-async function handleAdminCommand(userId, lowerText) {
-  // 创建任务提示
-  if (lowerText.startsWith('/add ') || lowerText.startsWith('创建任务')) {
-    await feishu.sendMessage(
-      userId,
-      '📝 创建任务请使用格式：\n/add 任务名称 用户邮箱 截止日期\n\n示例：\n/add 提交周报 zhangsan@company.com 2026-03-01'
-    );
-    return true;
-  }
-
-  // 查看所有任务
-  if (lowerText === '/all' || lowerText === '所有任务') {
-    const tasks = await reminderService.getAllTasks();
-    if (tasks.length === 0) {
-      await feishu.sendMessage(userId, '📋 暂无任务');
-      return true;
-    }
-
-    let reply = '📋 所有任务：\n\n';
-    tasks.forEach((task, i) => {
-      const name = reminderService.extractFieldText(task.fields[reminderService.FIELDS.TASK_NAME]);
-      const target = reminderService.extractFieldText(task.fields[reminderService.FIELDS.TARGET]);
-      const status = reminderService.extractFieldText(task.fields[reminderService.FIELDS.STATUS]);
-      reply += `${i + 1}. ${name} → ${target} [${status}]\n`;
-    });
-    await feishu.sendMessage(userId, reply);
-    return true;
-  }
-
-  // 查看待办
-  if (lowerText === '/pending' || lowerText === '待办') {
-    const tasks = await reminderService.getAllPendingTasks();
-    if (tasks.length === 0) {
-      await feishu.sendMessage(userId, '✅ 没有待办任务');
-      return true;
-    }
-
-    let reply = '⏳ 待办任务：\n\n';
-    tasks.forEach((task, i) => {
-      const name = reminderService.extractFieldText(task.fields[reminderService.FIELDS.TASK_NAME]);
-      const target = reminderService.extractFieldText(task.fields[reminderService.FIELDS.TARGET]);
-      reply += `${i + 1}. ${name} → ${target}\n   ID: ${task.record_id}\n`;
-    });
-    await feishu.sendMessage(userId, reply);
-    return true;
-  }
-
-  return false;
-}
-
-// ============ 普通用户命令处理 ============
-
-async function handleUserCommand(userId, lowerText, links) {
-  // 查看自己的任务
-  if (lowerText.includes('任务') || lowerText.includes('待办') || lowerText === '/list') {
-    const tasks = await reminderService.getUserPendingTasks(userId);
-    if (tasks.length === 0) {
-      await feishu.sendMessage(userId, '🎉 你没有待办的催办任务');
-      return true;
-    }
-
-    let reply = '📋 你的待办任务：\n\n';
-    tasks.forEach((task, i) => {
-      const name = reminderService.extractFieldText(task.fields[reminderService.FIELDS.TASK_NAME]);
-      reply += `${i + 1}. ${name}\n`;
-    });
-    reply += '\n发送「完成」或证明材料链接来完成任务';
-
-    setSession(userId, { tasks, step: 'select_task' });
-    await feishu.sendMessage(userId, reply);
-    return true;
-  }
-
-  // 完成任务
-  if (lowerText.includes('完成') || lowerText === 'done' || links.length > 0) {
-    const tasks = await reminderService.getUserPendingTasks(userId);
-
-    if (tasks.length === 0) {
-      await feishu.sendMessage(userId, '✅ 你目前没有待办任务');
-      return true;
-    }
-
-    if (tasks.length === 1) {
-      // 只有一个任务，直接完成
-      await completeTaskAndNotify(userId, tasks[0], links[0]);
-      return true;
-    }
-
-    // 多个任务，让用户选择
-    let reply = '你有多个待办任务，请回复编号选择：\n\n';
-    tasks.forEach((task, i) => {
-      const name = reminderService.extractFieldText(task.fields[reminderService.FIELDS.TASK_NAME]);
-      reply += `${i + 1}. ${name}\n`;
-    });
-
-    setSession(userId, { tasks, links, step: 'complete_select' });
-    await feishu.sendMessage(userId, reply);
-    return true;
-  }
-
-  return false;
-}
-
-// ============ 会话上下文处理 ============
-
-async function handleSessionContext(userId, lowerText, links) {
-  // 检查是否为有效的数字选择（正整数）
-  const numMatch = lowerText.match(/^(\d+)$/);
-  if (!numMatch) return false;
-
-  const num = parseInt(numMatch[1], 10);
-  if (num < 1) return false; // 排除 0 或负数
-
-  const session = getSession(userId);
-  if (!session || session.step !== 'complete_select') return false;
-
-  const index = num - 1;
-  if (index >= session.tasks.length) {
-    await feishu.sendMessage(userId, `❌ 请输入 1-${session.tasks.length} 之间的数字`);
-    return true;
-  }
-
-  const task = session.tasks[index];
-  const proof = session.links?.[0] || links[0] || '';
-
-  await completeTaskAndNotify(userId, task, proof);
-  deleteSession(userId);
-  return true;
-}
-
-// ============ 辅助函数 ============
-
-/**
- * 完成任务并发送通知
- */
-async function completeTaskAndNotify(userId, task, proof) {
-  const taskName = reminderService.extractFieldText(task.fields[reminderService.FIELDS.TASK_NAME]);
-
-  await reminderService.completeTask(task.record_id, proof || '', userId);
-
-  let reply = `✅ 已完成任务「${taskName}」`;
-  if (proof) reply += `\n📎 证明材料: ${proof}`;
-  await feishu.sendMessage(userId, reply);
-}
-
-/**
- * 发送帮助信息
- */
-async function sendHelpMessage(userId, isAdmin) {
-  let help = '👋 你好！我是催办助手。\n\n';
-  help += '📋 发送「任务」查看你的待办\n';
-  help += '✅ 发送「完成」或证明链接来完成任务\n';
-
-  if (isAdmin) {
-    help += '\n--- 管理员命令 ---\n';
-    help += '/all - 查看所有任务\n';
-    help += '/pending - 查看待办任务\n';
-  }
-
-  await feishu.sendMessage(userId, help);
-}
-
 // ══════════════════════════════════════════════════════════════════════════════
 // 催办命令处理器
 // ══════════════════════════════════════════════════════════════════════════════
-
-/**
- * 检查催办功能是否已配置（需要飞书多维表格环境变量）
- */
-function isReminderConfigured() {
-  return !!(process.env.REMINDER_APP_TOKEN && process.env.REMINDER_TABLE_ID);
-}
 
 /**
  * 向聊天发送回复（优先线程回复，否则发到 chat）
@@ -490,7 +281,6 @@ function isReminderConfigured() {
 async function replyToChat(chatId, messageId, text) {
   if (messageId) {
     return feishu.sendMessage(chatId, text, 'chat_id', messageId).catch(() =>
-      // Fallback: send to chat without threading
       feishu.sendMessage(chatId, text, 'chat_id')
     );
   }
@@ -501,9 +291,8 @@ async function replyToChat(chatId, messageId, text) {
  * 完成任务并通知用户
  */
 async function completeTaskAndReply(task, proof, user, senderId, chatId, messageId) {
-  const taskName = reminderService.extractFieldText(task.fields[reminderService.FIELDS.TASK_NAME]);
-  await reminderService.completeTask(task.record_id, proof || '', senderId);
-  let reply = `✅ 已完成任务「${taskName}」！`;
+  await reminderService.completeTask(task.id, proof || '', senderId);
+  let reply = `✅ 已完成任务「${task.title}」！`;
   if (proof) reply += `\n📎 证明：${proof}`;
   await replyToChat(chatId, messageId, reply);
 }
@@ -514,23 +303,13 @@ async function completeTaskAndReply(task, proof, user, senderId, chatId, message
  * @param {string} params.intent - 'cuiban_view' | 'cuiban_complete' | 'cuiban_create'
  * @param {string} params.text - 原始消息文本
  * @param {object} params.user - 用户记录（含 resolvedFeatures）
- * @param {string} params.senderId - 飞书 feishu_user_id（用于 Bitable 操作）
+ * @param {string} params.senderId - 飞书 feishu_user_id（用于任务查询和审计）
  * @param {string} params.chatId - 聊天 ID
  * @param {string} params.messageId - 消息 ID（用于线程回复）
  * @param {string} params.sessionKey - 会话 key（openId || senderId）
  * @returns {Promise<boolean>} true if handled
  */
 async function handleCuibanCommand({ intent, text, user, senderId, chatId, messageId, sessionKey }) {
-  // 功能未配置时给出明确提示
-  if (!isReminderConfigured()) {
-    await replyToChat(
-      chatId,
-      messageId,
-      '⚠️ 催办功能尚未配置，请联系管理员设置 REMINDER_APP_TOKEN 和 REMINDER_TABLE_ID'
-    );
-    return true;
-  }
-
   const resolved = user?.resolvedFeatures || resolveFeatures(user || { role: 'user', configs: {} });
 
   // ── 查看任务 ──────────────────────────────────────────────────────────────
@@ -549,12 +328,10 @@ async function handleCuibanCommand({ intent, text, user, senderId, chatId, messa
 
     let msg = `📋 你的待办任务（${tasks.length} 项）：\n\n`;
     tasks.forEach((t, i) => {
-      const name = reminderService.extractFieldText(t.fields[reminderService.FIELDS.TASK_NAME]);
-      const deadlineMs = t.fields[reminderService.FIELDS.DEADLINE];
-      const deadlineStr = deadlineMs
-        ? new Date(deadlineMs).toLocaleDateString('zh-CN', { month: 'long', day: 'numeric' })
+      const deadlineStr = t.deadline
+        ? new Date(t.deadline).toLocaleDateString('zh-CN', { month: 'long', day: 'numeric' })
         : '无截止日期';
-      msg += `${i + 1}. ${name}\n   📅 ${deadlineStr}\n`;
+      msg += `${i + 1}. ${t.title}\n   📅 ${deadlineStr}\n`;
     });
     msg += '\n发送「完成 N」标记对应任务完成';
     await replyToChat(chatId, messageId, msg);
@@ -594,10 +371,7 @@ async function handleCuibanCommand({ intent, text, user, senderId, chatId, messa
 
     // 尝试任务名模糊匹配
     if (!targetTask && cleanArg) {
-      targetTask = tasks.find((t) => {
-        const name = reminderService.extractFieldText(t.fields[reminderService.FIELDS.TASK_NAME]);
-        return name.includes(cleanArg) || cleanArg.includes(name);
-      });
+      targetTask = tasks.find((t) => t.title.includes(cleanArg) || cleanArg.includes(t.title));
     }
 
     // 只有一个任务 → 直接完成
@@ -613,8 +387,7 @@ async function handleCuibanCommand({ intent, text, user, senderId, chatId, messa
     // 多个任务，让用户选择
     let msg = `你有 ${tasks.length} 个待办任务，请回复编号选择：\n\n`;
     tasks.forEach((t, i) => {
-      const name = reminderService.extractFieldText(t.fields[reminderService.FIELDS.TASK_NAME]);
-      msg += `${i + 1}. ${name}\n`;
+      msg += `${i + 1}. ${t.title}\n`;
     });
     msg += '\n（回复数字选择，如「1」）';
 
@@ -688,8 +461,10 @@ async function handleCuibanCommand({ intent, text, user, senderId, chatId, messa
     }
 
     await reminderService.createTask({
-      taskName,
-      targetUserId: targetUser.feishu_user_id,
+      title: taskName,
+      assigneeId: targetUser.feishu_user_id,
+      assigneeOpenId: targetUser.open_id || null,
+      assigneeName: targetUser.name || null,
       deadline,
       creatorId: senderId,
     });

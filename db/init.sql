@@ -42,6 +42,25 @@ INSERT INTO settings (key, value, description) VALUES
     ('features', '{"cuiban": {"enabled": true}}', '功能开关')
 ON CONFLICT (key) DO NOTHING;
 
+-- 催办任务表（Bot 直接存储，不依赖飞书多维表格）
+CREATE TABLE IF NOT EXISTS tasks (
+    id               SERIAL PRIMARY KEY,
+    title            TEXT NOT NULL,
+    creator_id       VARCHAR(255),           -- feishu_user_id of creator (on_xxx)
+    assignee_id      VARCHAR(255) NOT NULL,  -- feishu_user_id of assignee (for lookup)
+    assignee_open_id VARCHAR(255),           -- open_id of assignee (ou_xxx, for messaging)
+    deadline         TIMESTAMPTZ,
+    status           VARCHAR(20) NOT NULL DEFAULT 'pending', -- pending | completed
+    proof            TEXT,
+    note             TEXT,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    completed_at     TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS tasks_assignee_status_idx ON tasks(assignee_id, status);
+CREATE INDEX IF NOT EXISTS tasks_creator_idx ON tasks(creator_id);
+CREATE INDEX IF NOT EXISTS tasks_status_idx ON tasks(status);
+
 -- 用户表（覆盖所有用户，包括管理员和普通用户）
 CREATE TABLE IF NOT EXISTS users (
     id SERIAL PRIMARY KEY,
