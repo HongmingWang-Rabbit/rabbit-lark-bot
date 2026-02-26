@@ -189,7 +189,7 @@ export const api = {
   upsertUser: (data: { userId: string; name?: string; email?: string; role?: UserRole; openId?: string }) =>
     fetchAPI<{ user: User }>('/users', { method: 'POST', body: JSON.stringify(data) }).then(r => r.user),
 
-  updateUser: (userId: string, data: { role?: UserRole; configs?: { features?: Record<string, boolean> } }) =>
+  updateUser: (userId: string, data: { role?: UserRole; configs?: { features?: Record<string, boolean> }; name?: string | null; email?: string | null; phone?: string | null }) =>
     fetchAPI<{ user: User }>(`/users/${userId}`, { method: 'PATCH', body: JSON.stringify(data) }).then(r => r.user),
 
   setFeature: (userId: string, featureId: string, enabled: boolean) =>

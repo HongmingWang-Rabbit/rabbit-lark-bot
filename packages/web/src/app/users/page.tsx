@@ -21,6 +21,7 @@ export default function UsersPage() {
   const { data: features = [] } = useSWR('/api/users/_features', api.getFeatures);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [showAdd, setShowAdd] = useState(false);
+  const [editUser, setEditUser] = useState<User | null>(null);
   const [saving, setSaving] = useState<string | null>(null);
 
   if (isLoading) return <Loading />;
@@ -74,6 +75,14 @@ export default function UsersPage() {
         />
       )}
 
+      {editUser && (
+        <EditUserModal
+          user={editUser}
+          onClose={() => setEditUser(null)}
+          onSaved={() => { setEditUser(null); mutate('/api/users'); }}
+        />
+      )}
+
       <div className="space-y-3">
         {users.length === 0 && (
           <div className="text-center py-12 text-gray-400">
@@ -92,6 +101,7 @@ export default function UsersPage() {
             onExpand={() => setExpandedId(expandedId === user.userId ? null : user.userId)}
             onRoleChange={handleRoleChange}
             onFeatureToggle={handleFeatureToggle}
+            onEdit={() => setEditUser(user)}
             onDelete={handleDelete}
           />
         ))}
@@ -103,7 +113,7 @@ export default function UsersPage() {
 // ── UserRow ──────────────────────────────────────────────────────────────────
 
 function UserRow({
-  user, features, expanded, saving, onExpand, onRoleChange, onFeatureToggle, onDelete,
+  user, features, expanded, saving, onExpand, onRoleChange, onFeatureToggle, onEdit, onDelete,
 }: {
   user: User;
   features: Feature[];
@@ -112,6 +122,7 @@ function UserRow({
   onExpand: () => void;
   onRoleChange: (id: string, role: UserRole) => void;
   onFeatureToggle: (id: string, fid: string, enabled: boolean) => void;
+  onEdit: () => void;
   onDelete: (id: string) => void;
 }) {
   const resolved = user.resolvedFeatures ?? {};
@@ -171,6 +182,13 @@ function UserRow({
             <option value="admin">管理员</option>
             <option value="superadmin">超级管理员</option>
           </select>
+
+          <button
+            onClick={onEdit}
+            className="text-xs text-gray-500 hover:text-gray-800 font-medium px-2 py-1"
+          >
+            编辑
+          </button>
 
           <button
             onClick={onExpand}
@@ -285,6 +303,85 @@ function InfoRow({ icon, label, value, mono }: { icon: string; label: string; va
       <span className="text-gray-400 text-xs w-4 flex-shrink-0">{icon}</span>
       <span className="text-xs text-gray-500 flex-shrink-0">{label}:</span>
       <span className={`text-xs text-gray-700 truncate ${mono ? 'font-mono' : ''}`}>{value}</span>
+    </div>
+  );
+}
+
+// ── EditUserModal ─────────────────────────────────────────────────────────────
+
+function EditUserModal({ user, onClose, onSaved }: { user: User; onClose: () => void; onSaved: () => void }) {
+  const [form, setForm] = useState({
+    name: user.name ?? '',
+    email: user.email ?? '',
+    phone: user.phone ?? '',
+  });
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState('');
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setLoading(true);
+    setErr('');
+    try {
+      await api.updateUser(user.userId, {
+        name: form.name.trim() || null,
+        email: form.email.trim() || null,
+        phone: form.phone.trim() || null,
+      });
+      onSaved();
+    } catch (e: any) {
+      setErr(e.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
+      <div className="bg-white rounded-xl shadow-xl p-6 w-full max-w-md mx-4">
+        <h3 className="text-lg font-bold text-gray-900 mb-1">编辑用户信息</h3>
+        <p className="text-xs text-gray-400 font-mono mb-4 truncate">{user.userId}</p>
+
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <Field label="显示名称">
+            <input
+              value={form.name}
+              onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
+              className="input"
+              placeholder="张三"
+              autoFocus
+            />
+          </Field>
+          <Field label="邮箱" hint="修改后将用于飞书账号关联匹配">
+            <input
+              type="email"
+              value={form.email}
+              onChange={e => setForm(f => ({ ...f, email: e.target.value }))}
+              className="input"
+              placeholder="user@company.com"
+            />
+          </Field>
+          <Field label="手机号">
+            <input
+              value={form.phone}
+              onChange={e => setForm(f => ({ ...f, phone: e.target.value }))}
+              className="input"
+              placeholder="+86 138 0000 0000"
+            />
+          </Field>
+
+          {err && <p className="text-red-500 text-sm">{err}</p>}
+
+          <div className="flex gap-3 pt-2">
+            <button type="button" onClick={onClose} className="flex-1 border border-gray-300 text-gray-700 rounded-lg py-2 text-sm hover:bg-gray-50">
+              取消
+            </button>
+            <button type="submit" disabled={loading} className="flex-1 bg-blue-600 text-white rounded-lg py-2 text-sm font-medium hover:bg-blue-700 disabled:opacity-50">
+              {loading ? '保存中...' : '保存'}
+            </button>
+          </div>
+        </form>
+      </div>
     </div>
   );
 }
