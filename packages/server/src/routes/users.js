@@ -31,7 +31,7 @@ router.get('/', async (req, res) => {
       limit: limit ? parseInt(limit) : 100,
       offset: offset ? parseInt(offset) : 0,
     });
-    res.json({ success: true, users: list.map(formatUser) });
+    res.json({ success: true, users: list.map(u => formatUser(u, true)) });
   } catch (err) {
     logger.error('List users failed', { error: err.message });
     res.status(500).json({ error: err.message });
