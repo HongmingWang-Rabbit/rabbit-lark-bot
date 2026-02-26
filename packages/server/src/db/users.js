@@ -100,7 +100,8 @@ const users = {
       throw new Error(`Invalid role: ${role}. Must be one of: ${VALID_ROLES.join(', ')}`);
     }
 
-    const safeConfigs = configs ? validateConfigs(configs) : undefined;
+    // Default to empty object — never pass NULL for configs (NOT NULL constraint)
+    const safeConfigs = validateConfigs(configs ?? {});
 
     const result = await pool.query(
       `INSERT INTO users (user_id, open_id, name, email, role, configs, feishu_user_id)
@@ -121,7 +122,7 @@ const users = {
         name ?? null,
         email ?? null,
         role,
-        safeConfigs ? JSON.stringify(safeConfigs) : null,
+        JSON.stringify(safeConfigs),
         feishuUserId ?? null,
       ]
     );
