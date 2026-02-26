@@ -11,6 +11,7 @@ const webhookRoutes = require('./routes/webhook');
 const apiRoutes = require('./routes/api');
 const agentRoutes = require('./routes/agent');
 const userRoutes = require('./routes/users');
+const { sendPendingReminders } = require('./services/reminder');
 
 // 验证环境变量
 validateEnv();
@@ -73,6 +74,23 @@ async function start() {
       logger.info(`Webhook: http://localhost:${PORT}/webhook/event`);
       logger.info(`API: http://localhost:${PORT}/api`);
     });
+
+    // ── 催办提醒定时任务 ──────────────────────────────────────────────────────
+    const REMINDER_CHECK_MINUTES = parseInt(process.env.REMINDER_CHECK_INTERVAL_MINUTES, 10) || 15;
+    const runReminderCron = async () => {
+      try {
+        const count = await sendPendingReminders();
+        if (count > 0) logger.info(`⏰ Reminder cron: sent ${count} reminder(s)`);
+      } catch (err) {
+        logger.error('Reminder cron error', { error: err.message });
+      }
+    };
+    // Run once immediately on startup (catches any reminders missed during downtime)
+    runReminderCron();
+    setInterval(runReminderCron, REMINDER_CHECK_MINUTES * 60 * 1000);
+    logger.info(`⏰ Reminder cron started`, { checkIntervalMinutes: REMINDER_CHECK_MINUTES });
+    // ─────────────────────────────────────────────────────────────────────────
+
   } catch (err) {
     logger.error('Startup failed', { error: err.message });
     process.exit(1);

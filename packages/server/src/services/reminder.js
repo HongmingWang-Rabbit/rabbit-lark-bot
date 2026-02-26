@@ -11,6 +11,7 @@ const feishu = require('../feishu/client');
 const logger = require('../utils/logger');
 
 const DEFAULT_DEADLINE_DAYS = parseInt(process.env.DEFAULT_DEADLINE_DAYS, 10) || 3;
+const DEFAULT_REMINDER_INTERVAL_HOURS = parseInt(process.env.DEFAULT_REMINDER_INTERVAL_HOURS, 10) || 24;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 // ── Queries ───────────────────────────────────────────────────────────────────
@@ -64,18 +65,23 @@ async function getAllTasks(limit = 100) {
  * @param {string} [params.deadline]         - Deadline as YYYY-MM-DD string
  * @param {string} [params.note]             - Optional note
  * @param {string} [params.creatorId]        - Creator feishu_user_id (for audit)
- * @param {string} [params.reporterOpenId]   - Reporter open_id (ou_xxx), notified when task completes
+ * @param {string} [params.reporterOpenId]        - Reporter open_id (ou_xxx), notified when task completes
+ * @param {number} [params.reminderIntervalHours] - Hours between reminders (0 = disabled, default 24)
  */
-async function createTask({ title, assigneeId, assigneeOpenId, assigneeName, deadline, note, creatorId, reporterOpenId }) {
+async function createTask({ title, assigneeId, assigneeOpenId, assigneeName, deadline, note, creatorId, reporterOpenId, reminderIntervalHours }) {
   const deadlineDate = deadline
     ? new Date(deadline)
     : new Date(Date.now() + DEFAULT_DEADLINE_DAYS * MS_PER_DAY);
 
+  const intervalHours = (reminderIntervalHours !== undefined && reminderIntervalHours !== null)
+    ? parseInt(reminderIntervalHours, 10)
+    : DEFAULT_REMINDER_INTERVAL_HOURS;
+
   const result = await pool.query(
-    `INSERT INTO tasks (title, assignee_id, assignee_open_id, reporter_open_id, deadline, note, creator_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
+    `INSERT INTO tasks (title, assignee_id, assignee_open_id, reporter_open_id, deadline, note, creator_id, reminder_interval_hours)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
      RETURNING *`,
-    [title, assigneeId, assigneeOpenId || null, reporterOpenId || null, deadlineDate, note || null, creatorId || null]
+    [title, assigneeId, assigneeOpenId || null, reporterOpenId || null, deadlineDate, note || null, creatorId || null, intervalHours]
   );
   const task = result.rows[0];
 
@@ -95,10 +101,11 @@ async function createTask({ title, assigneeId, assigneeOpenId, assigneeName, dea
   // Notify assignee via direct Feishu message
   if (assigneeOpenId) {
     const deadlineStr = deadlineDate.toLocaleDateString('zh-CN', { month: 'long', day: 'numeric' });
+    const reminderNote = intervalHours > 0 ? `\n⏰ 每 ${intervalHours} 小时提醒一次` : '';
     const notifyMsg =
       `📋 你收到一个新的催办任务：\n\n` +
       `「${title}」\n` +
-      `📅 截止：${deadlineStr}\n\n` +
+      `📅 截止：${deadlineStr}${reminderNote}\n\n` +
       `发送「完成」标记任务已完成`;
 
     feishu.sendMessage(assigneeOpenId, notifyMsg, 'open_id').catch((err) => {
@@ -199,6 +206,80 @@ async function deleteTask(taskId, userId) {
   return result.rows[0];
 }
 
+// ── Cron ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Scan for pending tasks that are due for a reminder and send Feishu DMs.
+ * Called periodically by the reminder cron in index.js.
+ *
+ * A task is due for a reminder when:
+ *   - status = 'pending'
+ *   - reminder_interval_hours > 0  (0 = disabled)
+ *   - assignee_open_id is set (need it to send the DM)
+ *   - NOW() >= COALESCE(last_reminded_at, created_at) + reminder_interval_hours
+ *
+ * @returns {Promise<number>} number of reminders sent
+ */
+async function sendPendingReminders() {
+  const { rows: tasks } = await pool.query(`
+    SELECT * FROM tasks
+    WHERE status = 'pending'
+      AND reminder_interval_hours > 0
+      AND assignee_open_id IS NOT NULL
+      AND NOW() >= COALESCE(last_reminded_at, created_at) + (reminder_interval_hours || ' hours')::interval
+    ORDER BY deadline ASC NULLS LAST
+  `);
+
+  if (tasks.length === 0) return 0;
+
+  const now = new Date();
+  for (const task of tasks) {
+    const isOverdue = task.deadline && new Date(task.deadline) < now;
+    const deadlineStr = task.deadline
+      ? new Date(task.deadline).toLocaleDateString('zh-CN', {
+          timeZone: 'Asia/Shanghai',
+          month: 'long',
+          day: 'numeric',
+        })
+      : '无截止日期';
+
+    const overdueTag = isOverdue ? '⚠️ 已逾期！\n' : '';
+    const msg =
+      `⏰ 催办提醒：\n\n` +
+      `${overdueTag}📋 「${task.title}」\n` +
+      `📅 截止：${deadlineStr}\n\n` +
+      `发送「完成」标记任务已完成`;
+
+    // DM assignee
+    feishu.sendMessage(task.assignee_open_id, msg, 'open_id').catch((err) => {
+      logger.warn('Reminder: failed to DM assignee', { taskId: task.id, error: err.message });
+    });
+
+    // If overdue, also alert reporter
+    if (isOverdue && task.reporter_open_id) {
+      const reporterMsg =
+        `⚠️ 催办任务已逾期：\n\n` +
+        `📋 「${task.title}」\n` +
+        `📅 截止日期：${deadlineStr}\n` +
+        `👤 执行人尚未完成，已再次提醒`;
+      feishu.sendMessage(task.reporter_open_id, reporterMsg, 'open_id').catch((err) => {
+        logger.warn('Reminder: failed to alert reporter of overdue', { taskId: task.id, error: err.message });
+      });
+    }
+
+    // Update last_reminded_at
+    await pool.query('UPDATE tasks SET last_reminded_at = NOW() WHERE id = $1', [task.id]);
+    logger.info('Reminder sent', {
+      taskId: task.id,
+      title: task.title,
+      isOverdue,
+      assigneeOpenId: task.assignee_open_id,
+    });
+  }
+
+  return tasks.length;
+}
+
 module.exports = {
   // Queries
   getUserPendingTasks,
@@ -208,6 +289,9 @@ module.exports = {
   createTask,
   completeTask,
   deleteTask,
+  // Cron
+  sendPendingReminders,
   // Constants
   DEFAULT_DEADLINE_DAYS,
+  DEFAULT_REMINDER_INTERVAL_HOURS,
 };
