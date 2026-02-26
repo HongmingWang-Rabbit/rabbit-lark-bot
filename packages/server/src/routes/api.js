@@ -55,13 +55,13 @@ router.post('/tasks', async (req, res) => {
 
     // 从本地 DB 查找目标用户（已通过飞书消息自动注册）
     const targetUser = await usersDb.findByEmail(targetEmail);
-    if (!targetUser?.feishu_user_id) {
+    if (!targetUser || (!targetUser.feishu_user_id && !targetUser.open_id)) {
       return res.status(400).json({ error: `找不到用户: ${targetEmail}（请确认用户已发送过飞书消息）` });
     }
 
     const task = await reminderService.createTask({
       title,
-      assigneeId: targetUser.feishu_user_id,
+      assigneeId: targetUser.feishu_user_id || targetUser.open_id,
       assigneeOpenId: targetUser.open_id || null,
       assigneeName: targetUser.name || null,
       deadline,

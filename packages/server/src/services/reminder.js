@@ -18,14 +18,20 @@ const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 /**
  * Get a user's pending tasks (assigned to them, not yet completed).
- * @param {string} feishuUserId - feishu_user_id (on_xxx) from webhook sender_id
+ * Matches by feishu_user_id (assignee_id) OR open_id (assignee_open_id) — whichever is available.
+ * @param {string|null} feishuUserId - feishu_user_id (on_xxx); may be null
+ * @param {string|null} openId       - open_id (ou_xxx) as fallback
  */
-async function getUserPendingTasks(feishuUserId) {
+async function getUserPendingTasks(feishuUserId, openId = null) {
   const result = await pool.query(
     `SELECT * FROM tasks
-     WHERE assignee_id = $1 AND status = 'pending'
+     WHERE status = 'pending'
+       AND (
+         ($1::text IS NOT NULL AND assignee_id = $1)
+         OR ($2::text IS NOT NULL AND assignee_open_id = $2)
+       )
      ORDER BY deadline ASC NULLS LAST, created_at ASC`,
-    [feishuUserId]
+    [feishuUserId || null, openId || null]
   );
   return result.rows;
 }

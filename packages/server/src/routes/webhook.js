@@ -357,7 +357,7 @@ async function handleCuibanCommand({ intent, text, user, senderId, openId, chatI
       return true;
     }
 
-    const tasks = await reminderService.getUserPendingTasks(effectiveSenderId);
+    const tasks = await reminderService.getUserPendingTasks(effectiveSenderId, openId);
 
     if (!tasks.length) {
       await replyToChat(chatId, messageId, '🎉 你目前没有待办的催办任务！');
@@ -397,7 +397,7 @@ async function handleCuibanCommand({ intent, text, user, senderId, openId, chatI
       return true;
     }
 
-    const tasks = await reminderService.getUserPendingTasks(effectiveSenderId);
+    const tasks = await reminderService.getUserPendingTasks(effectiveSenderId, openId);
 
     if (!tasks.length) {
       await replyToChat(chatId, messageId, '✅ 你目前没有待办任务');
@@ -507,7 +507,8 @@ async function handleCuibanCommand({ intent, text, user, senderId, openId, chatI
       }
     }
 
-    if (!targetUser || !targetUser.feishu_user_id) {
+    // Need at least one identifier (feishu_user_id preferred; open_id as fallback)
+    if (!targetUser || (!targetUser.feishu_user_id && !targetUser.open_id)) {
       await replyToChat(
         chatId,
         messageId,
@@ -518,12 +519,12 @@ async function handleCuibanCommand({ intent, text, user, senderId, openId, chatI
 
     await reminderService.createTask({
       title: taskName,
-      assigneeId: targetUser.feishu_user_id,
+      assigneeId: targetUser.feishu_user_id || targetUser.open_id,  // open_id as fallback
       assigneeOpenId: targetUser.open_id || null,
       assigneeName: targetUser.name || null,
       deadline,
       creatorId: senderId,
-      reporterOpenId: openId || null,  // 报告对象：催办发起人，任务完成时收到通知
+      reporterOpenId: openId || null,
     });
 
     const deadlineStr = deadline || `默认 ${reminderService.DEFAULT_DEADLINE_DAYS} 天`;
