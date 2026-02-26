@@ -244,10 +244,11 @@ async function resolveUserInfo(userId, userIdType = 'user_id') {
       const u = result.data.user;
       return {
         email: u.email || u.enterprise_email || null,
-        mobile: u.mobile || null,         // may be masked without contact:user.mobile permission
+        mobile: u.mobile || null,           // may be masked without extra permissions
         name: u.name || null,
         openId: u.open_id || null,
-        feishuUserId: u.user_id || null,  // on_xxx — useful when resolving by open_id
+        unionId: u.union_id || null,        // on_xxx, always returned with contact:contact.base:readonly
+        feishuUserId: u.user_id || u.union_id || null,  // user_id preferred; union_id as fallback
       };
     }
     logger.debug('resolveUserInfo: non-zero code', { userId, code: result.code, msg: result.msg });

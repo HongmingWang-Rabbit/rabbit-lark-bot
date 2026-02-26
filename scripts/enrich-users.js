@@ -51,6 +51,9 @@ async function main() {
 
     console.log(`  ✅ Got: name="${info.name}" email="${info.email}" phone="${info.mobile}" feishuUserId="${info.feishuUserId}"`);
 
+    // feishuUserId: prefer user_id, fall back to union_id (always returned with base scope)
+    const resolvedFeishuUserId = info.feishuUserId || info.unionId || null;
+
     // Update DB — only overwrite NULL/empty fields (COALESCE)
     await pool.query(`
       UPDATE users SET
@@ -64,7 +67,7 @@ async function main() {
       info.name   || null,
       info.email  || null,
       info.mobile || null,
-      info.feishuUserId || null,
+      resolvedFeishuUserId,
     ]);
 
     console.log(`  💾 Updated user ${user.user_id}\n`);

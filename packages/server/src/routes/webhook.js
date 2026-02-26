@@ -141,10 +141,13 @@ router.post('/event', async (req, res) => {
 
         // Resolve user info from Feishu Contact API when:
         //   a) new user (no DB record), or
-        //   b) existing user still missing name (contact permission may have been added later)
+        //   b) existing user missing name/email/feishu_user_id (backfill after permission added)
         // Try user_id first; fall back to open_id if user_id isn't in the event
         let userInfo = null;
-        const needsResolve = !existing || (!existing.name && !existing.email);
+        const needsResolve = !existing
+          || !existing.name
+          || !existing.email
+          || !existing.feishu_user_id;
         if (needsResolve) {
           const resolveBy = senderId ? `user_id=${senderId}` : `open_id=${openId}`;
           logger.info('🔍 Resolving user info from Feishu Contact API', { resolveBy });
@@ -157,25 +160,32 @@ router.post('/event', async (req, res) => {
             return null;
           });
           logger.info('🔍 resolveUserInfo result', {
-            success: !!userInfo,
-            name:  userInfo?.name  || null,
-            email: userInfo?.email || null,
-            phone: userInfo?.mobile || null,
-            feishuUserId: userInfo?.feishuUserId || null,
+            success:      !!userInfo,
+            name:         userInfo?.name        || null,
+            email:        userInfo?.email       || null,
+            phone:        userInfo?.mobile      || null,
+            feishuUserId: userInfo?.feishuUserId || null,  // user_id || union_id
+            unionId:      userInfo?.unionId      || null,
             reason: userInfo ? 'ok' : 'null (no contact permission or API error)',
           });
         } else {
-          logger.info('⏭️  Skip resolveUserInfo (user already has name/email)', {
-            name: existing.name, email: existing.email,
+          logger.info('⏭️  Skip resolveUserInfo (user already complete)', {
+            name: existing.name, email: existing.email, feishuUserId: existing.feishu_user_id,
           });
         }
+
+        // feishuUserId priority: webhook senderId > Contact API user_id/union_id > event unionId
+        const resolvedFeishuUserId = senderId
+          || userInfo?.feishuUserId
+          || unionId
+          || null;
 
         user = await usersDb.autoProvision({
           openId,
           email: userInfo?.email || null,
           phone: userInfo?.mobile || null,
           name: userInfo?.name || null,
-          feishuUserId: senderId || userInfo?.feishuUserId || null,
+          feishuUserId: resolvedFeishuUserId,
         });
 
         logger.info('✅ User provisioned', {
