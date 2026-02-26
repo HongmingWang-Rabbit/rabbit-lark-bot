@@ -269,7 +269,7 @@ router.post('/event', async (req, res) => {
       if (idx >= 0 && idx < activeSession.tasks.length) {
         const task = activeSession.tasks[idx];
         deleteSession(sessionKey);
-        await completeTaskAndReply(task, activeSession.proof || '', user, user?.user_id || senderId, chatId, messageId).catch((err) => {
+        await completeTaskAndReply(task, activeSession.proof || '', user, user?.feishu_user_id || senderId, chatId, messageId).catch((err) => {
           logger.error('Complete task error', { error: err.message });
           feishu.sendMessage(chatId, '⚠️ 完成任务失败，请稍后重试。', 'chat_id').catch(() => {});
         });
@@ -357,7 +357,8 @@ async function completeTaskAndReply(task, proof, user, senderId, chatId, message
  * @param {string} params.intent - 'cuiban_view' | 'cuiban_complete' | 'cuiban_create'
  * @param {string} params.text - 原始消息文本
  * @param {object} params.user - 用户记录（含 resolvedFeatures）
- * @param {string} params.senderId - 飞书 feishu_user_id（用于任务查询和审计）
+ * @param {string} params.senderId - 飞书 feishu_user_id（用于任务查询和审计，可能为 null）
+ * @param {string} params.openId  - 飞书 open_id（ou_xxx），用于设置 reporterOpenId
  * @param {string} params.chatId - 聊天 ID
  * @param {string} params.messageId - 消息 ID（用于线程回复）
  * @param {string} params.sessionKey - 会话 key（openId || senderId）
@@ -367,7 +368,8 @@ async function handleCuibanCommand({ intent, text, user, senderId, openId, chatI
   const resolved = user?.resolvedFeatures || resolveFeatures(user || { role: 'user', configs: {} });
 
   // 用于任务查询的 feishu_user_id：优先用 DB 里存的（autoProvision 可能从 contact API 补全过）
-  const effectiveSenderId = user?.user_id || senderId;
+  // Tasks are indexed by feishu_user_id (on_xxx), NOT user_id (which may be an email).
+  const effectiveSenderId = user?.feishu_user_id || senderId;
 
   // ── 查看任务 ──────────────────────────────────────────────────────────────
   if (intent === 'cuiban_view') {

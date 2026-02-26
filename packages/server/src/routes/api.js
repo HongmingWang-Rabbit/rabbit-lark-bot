@@ -47,7 +47,7 @@ router.get('/tasks', async (req, res) => {
 // 创建任务（通过邮箱查找被催办人）
 router.post('/tasks', async (req, res) => {
   try {
-    const { title, targetEmail, deadline, note, creatorId } = req.body;
+    const { title, targetEmail, deadline, note, creatorId, reporterOpenId, reminderIntervalHours } = req.body;
 
     if (!title || !targetEmail) {
       return res.status(400).json({ error: '任务名称和目标用户必填' });
@@ -67,6 +67,8 @@ router.post('/tasks', async (req, res) => {
       deadline,
       note,
       creatorId,
+      reporterOpenId: reporterOpenId || null,
+      reminderIntervalHours: reminderIntervalHours !== undefined ? Number(reminderIntervalHours) : undefined,
     });
 
     res.json({ success: true, task });
@@ -80,6 +82,7 @@ router.post('/tasks/:id/complete', async (req, res) => {
   try {
     const { proof, userId } = req.body;
     const task = await reminderService.completeTask(parseInt(req.params.id, 10), proof, userId);
+    if (!task) return res.status(404).json({ error: '任务不存在或已完成' });
     res.json({ success: true, task });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -91,6 +94,7 @@ router.delete('/tasks/:id', async (req, res) => {
   try {
     const { userId } = req.body;
     const task = await reminderService.deleteTask(parseInt(req.params.id, 10), userId);
+    if (!task) return res.status(404).json({ error: '任务不存在' });
     res.json({ success: true, task });
   } catch (err) {
     res.status(500).json({ error: err.message });
