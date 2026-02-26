@@ -231,7 +231,77 @@ async function deleteTask(taskId, userId) {
  * @returns {Promise<number>} number of reminders sent
  */
 async function sendPendingReminders() {
-  const { rows: tasks } = await pool.query(`
+  const now = new Date();
+  let totalSent = 0;
+
+  // ── Part 1: One-time deadline-overdue alert ───────────────────────────────
+  // Fires ONCE the moment a deadline passes — notifies BOTH assignee and reporter.
+  // Tracked via deadline_notified_at so it never fires twice for the same task.
+  const { rows: overdueTasks } = await pool.query(`
+    SELECT * FROM tasks
+    WHERE status = 'pending'
+      AND deadline IS NOT NULL
+      AND deadline < NOW()
+      AND deadline_notified_at IS NULL
+  `);
+
+  if (overdueTasks.length > 0) {
+    logger.info(`⏰ Deadline alert: ${overdueTasks.length} task(s) newly overdue`);
+
+    await Promise.allSettled(
+      overdueTasks.map(async (task) => {
+        const deadlineStr = new Date(task.deadline).toLocaleString('zh-CN', {
+          timeZone: 'Asia/Shanghai',
+          month: 'long',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit',
+        });
+
+        // Notify assignee — urgent tone
+        if (task.assignee_open_id) {
+          const assigneeMsg =
+            `🚨 催办任务已逾期，请尽快完成：\n\n` +
+            `📋 「${task.title}」\n` +
+            `📅 截止时间：${deadlineStr}（已过期）\n\n` +
+            `发送「完成」标记任务已完成`;
+          await feishu.sendMessage(task.assignee_open_id, assigneeMsg, 'open_id').catch((err) => {
+            logger.warn('Deadline alert: failed to DM assignee', { taskId: task.id, error: err.message });
+          });
+        }
+
+        // Notify reporter — formal overdue report
+        if (task.reporter_open_id) {
+          const reporterMsg =
+            `📢 催办任务逾期通报：\n\n` +
+            `📋 「${task.title}」\n` +
+            `📅 截止时间：${deadlineStr}\n` +
+            `🔴 状态：已逾期，执行人尚未完成\n\n` +
+            `系统将继续每 ${task.reminder_interval_hours} 小时提醒执行人`;
+          await feishu.sendMessage(task.reporter_open_id, reporterMsg, 'open_id').catch((err) => {
+            logger.warn('Deadline alert: failed to DM reporter', { taskId: task.id, error: err.message });
+          });
+        }
+
+        // Mark deadline notification as sent
+        await pool.query(
+          'UPDATE tasks SET deadline_notified_at = NOW() WHERE id = $1',
+          [task.id]
+        );
+        logger.info('Deadline alert sent', {
+          taskId: task.id,
+          title: task.title,
+          hasReporter: !!task.reporter_open_id,
+        });
+      })
+    );
+
+    totalSent += overdueTasks.length;
+  }
+
+  // ── Part 2: Regular interval reminders (assignee only) ───────────────────
+  // Fires every reminder_interval_hours — keeps nudging assignee until complete.
+  const { rows: intervalTasks } = await pool.query(`
     SELECT * FROM tasks
     WHERE status = 'pending'
       AND reminder_interval_hours > 0
@@ -240,62 +310,46 @@ async function sendPendingReminders() {
     ORDER BY deadline ASC NULLS LAST
   `);
 
-  if (tasks.length === 0) return 0;
+  if (intervalTasks.length > 0) {
+    const results = await Promise.allSettled(
+      intervalTasks.map(async (task) => {
+        const isOverdue = task.deadline && new Date(task.deadline) < now;
+        const deadlineStr = task.deadline
+          ? new Date(task.deadline).toLocaleDateString('zh-CN', {
+              timeZone: 'Asia/Shanghai',
+              month: 'long',
+              day: 'numeric',
+            })
+          : '无截止日期';
 
-  const now = new Date();
+        const overdueTag = isOverdue ? '⚠️ 已逾期！\n' : '';
+        const msg =
+          `⏰ 催办提醒：\n\n` +
+          `${overdueTag}📋 「${task.title}」\n` +
+          `📅 截止：${deadlineStr}\n\n` +
+          `发送「完成」标记任务已完成`;
 
-  // Process all tasks concurrently — each task sends its own DMs and updates its timestamp.
-  // Promise.allSettled ensures one failing task doesn't block the others.
-  const results = await Promise.allSettled(
-    tasks.map(async (task) => {
-      const isOverdue = task.deadline && new Date(task.deadline) < now;
-      const deadlineStr = task.deadline
-        ? new Date(task.deadline).toLocaleDateString('zh-CN', {
-            timeZone: 'Asia/Shanghai',
-            month: 'long',
-            day: 'numeric',
-          })
-        : '无截止日期';
-
-      const overdueTag = isOverdue ? '⚠️ 已逾期！\n' : '';
-      const msg =
-        `⏰ 催办提醒：\n\n` +
-        `${overdueTag}📋 「${task.title}」\n` +
-        `📅 截止：${deadlineStr}\n\n` +
-        `发送「完成」标记任务已完成`;
-
-      // DM assignee (fire-and-forget — don't let a send failure skip the DB update)
-      await feishu.sendMessage(task.assignee_open_id, msg, 'open_id').catch((err) => {
-        logger.warn('Reminder: failed to DM assignee', { taskId: task.id, error: err.message });
-      });
-
-      // If overdue, also alert reporter
-      if (isOverdue && task.reporter_open_id) {
-        const reporterMsg =
-          `⚠️ 催办任务已逾期：\n\n` +
-          `📋 「${task.title}」\n` +
-          `📅 截止日期：${deadlineStr}\n` +
-          `👤 执行人尚未完成，已再次提醒`;
-        await feishu.sendMessage(task.reporter_open_id, reporterMsg, 'open_id').catch((err) => {
-          logger.warn('Reminder: failed to alert reporter of overdue', { taskId: task.id, error: err.message });
+        await feishu.sendMessage(task.assignee_open_id, msg, 'open_id').catch((err) => {
+          logger.warn('Reminder: failed to DM assignee', { taskId: task.id, error: err.message });
         });
-      }
 
-      // Always update last_reminded_at so we don't re-send next cycle
-      await pool.query('UPDATE tasks SET last_reminded_at = NOW() WHERE id = $1', [task.id]);
-      logger.info('Reminder sent', { taskId: task.id, title: task.title, isOverdue });
-    })
-  );
+        await pool.query('UPDATE tasks SET last_reminded_at = NOW() WHERE id = $1', [task.id]);
+        logger.info('Interval reminder sent', { taskId: task.id, title: task.title, isOverdue });
+      })
+    );
 
-  const failed = results.filter((r) => r.status === 'rejected');
-  if (failed.length > 0) {
-    logger.warn('Reminder cron: some tasks failed', {
-      failed: failed.length,
-      errors: failed.map((r) => r.reason?.message),
-    });
+    const failed = results.filter((r) => r.status === 'rejected');
+    if (failed.length > 0) {
+      logger.warn('Reminder cron: some interval reminders failed', {
+        failed: failed.length,
+        errors: failed.map((r) => r.reason?.message),
+      });
+    }
+
+    totalSent += intervalTasks.length;
   }
 
-  return tasks.length;
+  return totalSent;
 }
 
 module.exports = {

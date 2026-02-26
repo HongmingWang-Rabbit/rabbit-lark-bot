@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     status                VARCHAR(20) NOT NULL DEFAULT 'pending', -- pending | completed
     reminder_interval_hours INTEGER NOT NULL DEFAULT 24,          -- hours between reminders (0 = disabled)
     last_reminded_at      TIMESTAMPTZ,                            -- when last reminder was sent
+    deadline_notified_at  TIMESTAMPTZ,                            -- when one-time deadline-overdue alert was sent
     proof                 TEXT,
     note                  TEXT,
     created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
