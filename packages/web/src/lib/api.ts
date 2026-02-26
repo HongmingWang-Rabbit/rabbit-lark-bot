@@ -19,8 +19,8 @@ export interface Task {
 
 export interface CreateTaskParams {
   title: string;
-  targetEmail: string;
-  reporterEmail?: string;            // person to notify on completion (optional)
+  targetOpenId: string;              // assignee's open_id (ou_xxx)
+  reporterOpenId?: string;           // reporter's open_id — notified on completion
   deadline?: string;
   note?: string;
   reminderIntervalHours?: number;

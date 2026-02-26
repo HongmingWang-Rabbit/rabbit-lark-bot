@@ -3,6 +3,7 @@
 import { useState, useMemo } from 'react';
 import useSWR, { mutate } from 'swr';
 import { api, Task, User, CreateTaskParams } from '@/lib/api';
+import UserCombobox from '@/components/UserCombobox';
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -219,12 +220,20 @@ function StatusBadge({ status, completedAt }: { status: Task['status']; complete
 // ── create form ───────────────────────────────────────────────────────────────
 
 function TaskForm({ onSuccess }: { onSuccess: () => void }) {
+  const { data: users = [] } = useSWR<User[]>('/users', api.getUsers);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [form, setForm] = useState<CreateTaskParams>({
+  const [form, setForm] = useState<{
+    title: string;
+    targetOpenId: string | null;
+    reporterOpenId: string | null;
+    deadline: string;
+    note: string;
+    reminderIntervalHours: number;
+  }>({
     title: '',
-    targetEmail: '',
-    reporterEmail: '',
+    targetOpenId: null,
+    reporterOpenId: null,
     deadline: '',
     note: '',
     reminderIntervalHours: 24,
@@ -232,12 +241,17 @@ function TaskForm({ onSuccess }: { onSuccess: () => void }) {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!form.targetOpenId) { setError('请选择催办对象'); return; }
     setLoading(true);
     setError(null);
     try {
       await api.createTask({
-        ...form,
-        reminderIntervalHours: form.reminderIntervalHours ?? 24,
+        title: form.title,
+        targetOpenId: form.targetOpenId,
+        reporterOpenId: form.reporterOpenId ?? undefined,
+        deadline: form.deadline || undefined,
+        note: form.note || undefined,
+        reminderIntervalHours: form.reminderIntervalHours,
       });
       onSuccess();
     } catch (err) {
@@ -247,12 +261,6 @@ function TaskForm({ onSuccess }: { onSuccess: () => void }) {
     }
   };
 
-  const field = (id: keyof CreateTaskParams) => ({
-    value: String(form[id] ?? ''),
-    onChange: (e: React.ChangeEvent<HTMLInputElement>) =>
-      setForm({ ...form, [id]: e.target.value }),
-  });
-
   return (
     <form onSubmit={handleSubmit} className="bg-white rounded-lg shadow p-6 mb-6">
       {error && (
@@ -261,41 +269,60 @@ function TaskForm({ onSuccess }: { onSuccess: () => void }) {
       <div className="grid grid-cols-2 gap-4">
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">任务名称 *</label>
-          <input type="text" required {...field('title')}
+          <input
+            type="text" required
+            value={form.title}
+            onChange={e => setForm({ ...form, title: e.target.value })}
             className="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             placeholder="例：提交季度报告"
           />
         </div>
+
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">催办对象邮箱 *</label>
-          <input type="email" required {...field('targetEmail')}
-            className="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            placeholder="assignee@company.com"
+          <label className="block text-sm font-medium text-gray-700 mb-1">催办对象 *</label>
+          <UserCombobox
+            users={users}
+            value={form.targetOpenId}
+            onChange={openId => setForm({ ...form, targetOpenId: openId })}
+            placeholder="搜索姓名或邮箱…"
+            required
           />
         </div>
+
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">
-            报告对象邮箱
+            报告对象
             <span className="ml-1 text-gray-400 font-normal text-xs">（任务完成时收到通知）</span>
           </label>
-          <input type="email" {...field('reporterEmail')}
-            className="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            placeholder="reporter@company.com（可选）"
+          <UserCombobox
+            users={users}
+            value={form.reporterOpenId}
+            onChange={openId => setForm({ ...form, reporterOpenId: openId })}
+            placeholder="搜索姓名或邮箱（可选）"
           />
         </div>
+
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">截止时间</label>
-          <input type="date" {...field('deadline')}
+          <input
+            type="date"
+            value={form.deadline}
+            onChange={e => setForm({ ...form, deadline: e.target.value })}
             className="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
           />
         </div>
+
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">备注</label>
-          <input type="text" {...field('note')}
+          <input
+            type="text"
+            value={form.note}
+            onChange={e => setForm({ ...form, note: e.target.value })}
             className="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             placeholder="可选说明"
           />
         </div>
+
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">
             提醒间隔（小时）
@@ -303,12 +330,13 @@ function TaskForm({ onSuccess }: { onSuccess: () => void }) {
           </label>
           <input
             type="number" min={0} max={168}
-            value={form.reminderIntervalHours ?? 24}
-            onChange={(e) => setForm({ ...form, reminderIntervalHours: Number(e.target.value) })}
+            value={form.reminderIntervalHours}
+            onChange={e => setForm({ ...form, reminderIntervalHours: Number(e.target.value) })}
             className="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
           />
         </div>
       </div>
+
       <div className="mt-4">
         <button
           type="submit" disabled={loading}
