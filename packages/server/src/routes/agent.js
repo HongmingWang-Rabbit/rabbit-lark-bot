@@ -29,7 +29,7 @@ function detectIdType(id) {
  */
 router.post('/send', async (req, res) => {
   try {
-    const { chat_id, content, msg_type = 'text' } = req.body;
+    const { chat_id, content, msg_type = 'text', reply_to_message_id } = req.body;
     
     if (!chat_id || !content) {
       return res.status(400).json({ error: 'chat_id and content are required' });
@@ -37,8 +37,14 @@ router.post('/send', async (req, res) => {
     
     logger.info('Agent sending message', { chat_id, contentLength: content.length, msg_type });
     
-    const receiveIdType = detectIdType(chat_id);
-    const message_id = await feishu.sendMessageByType(chat_id, content, msg_type, receiveIdType);
+    let message_id;
+    // Use reply endpoint for threaded replies when message_id is provided
+    if (reply_to_message_id) {
+      message_id = await feishu.replyMessage(reply_to_message_id, content);
+    } else {
+      const receiveIdType = detectIdType(chat_id);
+      message_id = await feishu.sendMessageByType(chat_id, content, msg_type, receiveIdType);
+    }
     
     res.json({ success: true, message_id });
   } catch (err) {

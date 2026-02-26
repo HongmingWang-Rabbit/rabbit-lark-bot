@@ -1,0 +1,11 @@
+{
+  "id": "rabbit-lark",
+  "name": "Rabbit Lark Bot",
+  "description": "Receive Feishu/Lark messages bridged through rabbit-lark-bot",
+  "channels": ["lark"],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

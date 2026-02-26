@@ -1,0 +1,8 @@
+{
+  "name": "rabbit-lark",
+  "version": "1.0.0",
+  "description": "OpenClaw channel plugin for Feishu/Lark via rabbit-lark-bot",
+  "openclaw": {
+    "extensions": ["./index.ts"]
+  }
+}
