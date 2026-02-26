@@ -144,12 +144,17 @@ function UserRow({
               </span>
             )}
           </div>
-          <p className="text-xs text-gray-400 font-mono mt-0.5 truncate">
-            {user.email && user.email !== user.userId ? user.email : user.userId}
-            {user.phone && (
-              <span className="ml-2 text-gray-400">· {user.phone}</span>
+          <div className="flex items-center gap-3 mt-0.5 flex-wrap">
+            {user.email && (
+              <span className="text-xs text-gray-400 truncate">📧 {user.email}</span>
             )}
-          </p>
+            {user.phone && (
+              <span className="text-xs text-gray-400">📱 {user.phone}</span>
+            )}
+            {!user.email && !user.phone && (
+              <span className="text-xs text-gray-400 font-mono truncate">{user.userId}</span>
+            )}
+          </div>
         </div>
 
         <div className="flex items-center gap-3 flex-shrink-0">
@@ -183,9 +188,29 @@ function UserRow({
         </div>
       </div>
 
-      {/* Feature toggles */}
+      {/* Expanded detail + feature toggles */}
       {expanded && (
-        <div className="border-t border-gray-100 px-5 py-4 bg-gray-50">
+        <div className="border-t border-gray-100 bg-gray-50">
+
+          {/* ── User info ── */}
+          <div className="px-5 pt-4 pb-3">
+            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">用户信息</p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1.5">
+              <InfoRow icon="📧" label="邮箱" value={user.email} mono={false} />
+              <InfoRow icon="📱" label="手机" value={user.phone} mono={false} />
+              <InfoRow icon="🆔" label="飞书 User ID" value={user.feishuUserId} mono />
+              <InfoRow icon="🔗" label="Open ID" value={user.openId} mono />
+              <InfoRow
+                icon="📅"
+                label="注册时间"
+                value={user.createdAt ? new Date(user.createdAt).toLocaleString('zh-CN', { dateStyle: 'short', timeStyle: 'short' }) : null}
+                mono={false}
+              />
+            </div>
+          </div>
+
+          {/* ── Feature toggles ── */}
+          <div className="px-5 pb-4 pt-2 border-t border-gray-200">
           <p className="text-xs text-gray-500 mb-3">
             ✦ 灰色 = 由角色决定的默认值 &nbsp;|&nbsp; 彩色 = 手动覆盖
           </p>
@@ -244,8 +269,22 @@ function UserRow({
               ↩ 清除所有覆盖，恢复角色默认值
             </button>
           )}
+          </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ── InfoRow helper ────────────────────────────────────────────────────────────
+
+function InfoRow({ icon, label, value, mono }: { icon: string; label: string; value: string | null | undefined; mono: boolean }) {
+  if (!value) return null;
+  return (
+    <div className="flex items-baseline gap-1.5 min-w-0">
+      <span className="text-gray-400 text-xs w-4 flex-shrink-0">{icon}</span>
+      <span className="text-xs text-gray-500 flex-shrink-0">{label}:</span>
+      <span className={`text-xs text-gray-700 truncate ${mono ? 'font-mono' : ''}`}>{value}</span>
     </div>
   );
 }
