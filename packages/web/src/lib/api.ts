@@ -91,7 +91,8 @@ export interface ApiError {
 
 // ============ API 配置 ============
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || '/api';
+// Client always calls /api (relative) — Next.js rewrites proxy to the backend server
+const API_BASE = '/api';
 const API_KEY = process.env.NEXT_PUBLIC_API_KEY || '';
 
 // ============ 请求封装 ============
