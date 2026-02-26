@@ -237,47 +237,55 @@ async function sendPendingReminders() {
   if (tasks.length === 0) return 0;
 
   const now = new Date();
-  for (const task of tasks) {
-    const isOverdue = task.deadline && new Date(task.deadline) < now;
-    const deadlineStr = task.deadline
-      ? new Date(task.deadline).toLocaleDateString('zh-CN', {
-          timeZone: 'Asia/Shanghai',
-          month: 'long',
-          day: 'numeric',
-        })
-      : '无截止日期';
 
-    const overdueTag = isOverdue ? '⚠️ 已逾期！\n' : '';
-    const msg =
-      `⏰ 催办提醒：\n\n` +
-      `${overdueTag}📋 「${task.title}」\n` +
-      `📅 截止：${deadlineStr}\n\n` +
-      `发送「完成」标记任务已完成`;
+  // Process all tasks concurrently — each task sends its own DMs and updates its timestamp.
+  // Promise.allSettled ensures one failing task doesn't block the others.
+  const results = await Promise.allSettled(
+    tasks.map(async (task) => {
+      const isOverdue = task.deadline && new Date(task.deadline) < now;
+      const deadlineStr = task.deadline
+        ? new Date(task.deadline).toLocaleDateString('zh-CN', {
+            timeZone: 'Asia/Shanghai',
+            month: 'long',
+            day: 'numeric',
+          })
+        : '无截止日期';
 
-    // DM assignee
-    feishu.sendMessage(task.assignee_open_id, msg, 'open_id').catch((err) => {
-      logger.warn('Reminder: failed to DM assignee', { taskId: task.id, error: err.message });
-    });
+      const overdueTag = isOverdue ? '⚠️ 已逾期！\n' : '';
+      const msg =
+        `⏰ 催办提醒：\n\n` +
+        `${overdueTag}📋 「${task.title}」\n` +
+        `📅 截止：${deadlineStr}\n\n` +
+        `发送「完成」标记任务已完成`;
 
-    // If overdue, also alert reporter
-    if (isOverdue && task.reporter_open_id) {
-      const reporterMsg =
-        `⚠️ 催办任务已逾期：\n\n` +
-        `📋 「${task.title}」\n` +
-        `📅 截止日期：${deadlineStr}\n` +
-        `👤 执行人尚未完成，已再次提醒`;
-      feishu.sendMessage(task.reporter_open_id, reporterMsg, 'open_id').catch((err) => {
-        logger.warn('Reminder: failed to alert reporter of overdue', { taskId: task.id, error: err.message });
+      // DM assignee (fire-and-forget — don't let a send failure skip the DB update)
+      await feishu.sendMessage(task.assignee_open_id, msg, 'open_id').catch((err) => {
+        logger.warn('Reminder: failed to DM assignee', { taskId: task.id, error: err.message });
       });
-    }
 
-    // Update last_reminded_at
-    await pool.query('UPDATE tasks SET last_reminded_at = NOW() WHERE id = $1', [task.id]);
-    logger.info('Reminder sent', {
-      taskId: task.id,
-      title: task.title,
-      isOverdue,
-      assigneeOpenId: task.assignee_open_id,
+      // If overdue, also alert reporter
+      if (isOverdue && task.reporter_open_id) {
+        const reporterMsg =
+          `⚠️ 催办任务已逾期：\n\n` +
+          `📋 「${task.title}」\n` +
+          `📅 截止日期：${deadlineStr}\n` +
+          `👤 执行人尚未完成，已再次提醒`;
+        await feishu.sendMessage(task.reporter_open_id, reporterMsg, 'open_id').catch((err) => {
+          logger.warn('Reminder: failed to alert reporter of overdue', { taskId: task.id, error: err.message });
+        });
+      }
+
+      // Always update last_reminded_at so we don't re-send next cycle
+      await pool.query('UPDATE tasks SET last_reminded_at = NOW() WHERE id = $1', [task.id]);
+      logger.info('Reminder sent', { taskId: task.id, title: task.title, isOverdue });
+    })
+  );
+
+  const failed = results.filter((r) => r.status === 'rejected');
+  if (failed.length > 0) {
+    logger.warn('Reminder cron: some tasks failed', {
+      failed: failed.length,
+      errors: failed.map((r) => r.reason?.message),
     });
   }
 

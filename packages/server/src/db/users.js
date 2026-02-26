@@ -54,6 +54,37 @@ const users = {
     return result.rows[0] || null;
   },
 
+  /**
+   * Search users by display name (case-insensitive partial match).
+   * Returns up to `limit` results; used by /add when email lookup fails.
+   * @param {string} nameQuery
+   * @param {number} [limit=5]
+   */
+  async searchByName(nameQuery, limit = 5) {
+    if (!nameQuery) return [];
+    const result = await pool.query(
+      `SELECT * FROM users WHERE name ILIKE $1 ORDER BY name LIMIT $2`,
+      [`%${nameQuery}%`, limit]
+    );
+    return result.rows;
+  },
+
+  /**
+   * Search users by name (case-insensitive partial match).
+   * Returns up to `limit` results ordered by name.
+   * @param {string} nameQuery
+   * @param {number} [limit=5]
+   * @returns {Promise<object[]>}
+   */
+  async searchByName(nameQuery, limit = 5) {
+    if (!nameQuery) return [];
+    const result = await pool.query(
+      `SELECT * FROM users WHERE name ILIKE $1 ORDER BY name LIMIT $2`,
+      [`%${nameQuery}%`, limit]
+    );
+    return result.rows;
+  },
+
   /** Find by Feishu user_id (on_xxx) stored in feishu_user_id column */
   async findByFeishuUserId(feishuUserId) {
     if (!feishuUserId) return null;

@@ -61,8 +61,32 @@ CREATE TABLE IF NOT EXISTS tasks (
 );
 
 CREATE INDEX IF NOT EXISTS tasks_assignee_status_idx ON tasks(assignee_id, status);
+
+-- 用户会话表（替代内存 Map，重启后依然有效）
+CREATE TABLE IF NOT EXISTS user_sessions (
+    id          SERIAL PRIMARY KEY,
+    session_key VARCHAR(255) NOT NULL UNIQUE,
+    data        JSONB NOT NULL,
+    expires_at  TIMESTAMPTZ NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS user_sessions_key_idx     ON user_sessions (session_key);
+CREATE INDEX IF NOT EXISTS user_sessions_expires_idx ON user_sessions (expires_at);
 CREATE INDEX IF NOT EXISTS tasks_creator_idx ON tasks(creator_id);
 CREATE INDEX IF NOT EXISTS tasks_status_idx ON tasks(status);
+
+-- 用户会话表（持久化多步操作会话，重启后恢复）
+CREATE TABLE IF NOT EXISTS user_sessions (
+    id          SERIAL PRIMARY KEY,
+    session_key VARCHAR(255) NOT NULL UNIQUE,
+    data        JSONB NOT NULL,
+    expires_at  TIMESTAMPTZ NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS user_sessions_key_idx     ON user_sessions (session_key);
+CREATE INDEX IF NOT EXISTS user_sessions_expires_idx ON user_sessions (expires_at);
 
 -- 用户表（覆盖所有用户，包括管理员和普通用户）
 CREATE TABLE IF NOT EXISTS users (

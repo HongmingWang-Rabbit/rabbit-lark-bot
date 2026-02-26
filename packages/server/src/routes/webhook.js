@@ -3,6 +3,7 @@ const express = require('express');
 const router = express.Router();
 const feishu = require('../feishu/client');
 const usersDb = require('../db/users');
+const sessions = require('../db/sessions');
 const { resolveFeatures } = require('../features');
 const { detectIntent } = require('../utils/intentDetector');
 const { buildMenu } = require('../utils/menuBuilder');
@@ -25,54 +26,27 @@ function decryptFeishuPayload(encryptStr, encryptKey) {
   return JSON.parse(decrypted);
 }
 
-// ============ 用户会话管理 ============
-
-// 会话过期时间（5分钟）
-const SESSION_TTL_MS = 5 * 60 * 1000;
-
-// 用户会话状态（内存存储）
-const userSessions = new Map();
+// ============ 用户会话管理（DB 持久化，重启后恢复）============
 
 /**
- * 设置用户会话（带自动过期）
+ * 设置用户会话（写入 PostgreSQL，自动过期）
  */
-function setSession(userId, data) {
-  // 清理旧的定时器
-  const existing = userSessions.get(userId);
-  if (existing?.timer) {
-    clearTimeout(existing.timer);
-  }
-
-  // 设置新会话
-  const timer = setTimeout(() => {
-    userSessions.delete(userId);
-    logger.debug('Session expired', { userId });
-  }, SESSION_TTL_MS);
-
-  userSessions.set(userId, { ...data, timer, createdAt: Date.now() });
+async function setSession(key, data) {
+  await sessions.set(key, data);
 }
 
 /**
- * 获取用户会话
+ * 获取用户会话（从 PostgreSQL 读取，已过期返回 null）
  */
-function getSession(userId) {
-  const session = userSessions.get(userId);
-  if (!session) return null;
-
-  // 排除内部字段
-  const { timer, ...data } = session;
-  return data;
+async function getSession(key) {
+  return sessions.get(key);
 }
 
 /**
  * 删除用户会话
  */
-function deleteSession(userId) {
-  const session = userSessions.get(userId);
-  if (session?.timer) {
-    clearTimeout(session.timer);
-  }
-  userSessions.delete(userId);
+async function deleteSession(key) {
+  await sessions.del(key);
 }
 
 // ============ 事件去重 ============
@@ -259,7 +233,7 @@ router.post('/event', async (req, res) => {
 
     // ── [4] 会话上下文（数字选择） ────────────────────────────────────────
     const sessionKey = openId || senderId;
-    const activeSession = getSession(sessionKey);
+    const activeSession = await getSession(sessionKey);
     if (activeSession) {
       logger.info('💬 Active session found', { step: activeSession.step, taskCount: activeSession.tasks?.length });
     }
@@ -268,7 +242,7 @@ router.post('/event', async (req, res) => {
       logger.info('✔️  Session: completing task by number', { idx: idx + 1 });
       if (idx >= 0 && idx < activeSession.tasks.length) {
         const task = activeSession.tasks[idx];
-        deleteSession(sessionKey);
+        await deleteSession(sessionKey);
         await completeTaskAndReply(task, activeSession.proof || '', user, user?.feishu_user_id || senderId, chatId, messageId).catch((err) => {
           logger.error('Complete task error', { error: err.message });
           feishu.sendMessage(chatId, '⚠️ 完成任务失败，请稍后重试。', 'chat_id').catch(() => {});
@@ -460,7 +434,7 @@ async function handleCuibanCommand({ intent, text, user, senderId, openId, chatI
     });
     msg += '\n（回复数字选择，如「1」）';
 
-    setSession(sessionKey, { tasks, proof, step: 'complete_select', chatId, messageId });
+    await setSession(sessionKey, { tasks, proof, step: 'complete_select', chatId, messageId });
     await replyToChat(chatId, messageId, msg);
     return true;
   }
@@ -511,7 +485,7 @@ async function handleCuibanCommand({ intent, text, user, senderId, openId, chatI
       return true;
     }
 
-    // 查找目标用户（按邮箱 → 按 feishu_user_id）
+    // 查找目标用户（邮箱 → feishu_user_id → 姓名模糊匹配）
     let targetUser = null;
     if (target.includes('@')) {
       targetUser = await usersDb.findByEmail(target);
@@ -519,12 +493,25 @@ async function handleCuibanCommand({ intent, text, user, senderId, openId, chatI
     if (!targetUser) {
       targetUser = await usersDb.findByFeishuUserId(target);
     }
+    if (!targetUser) {
+      // 姓名模糊搜索（最后手段）
+      const nameMatches = await usersDb.searchByName(target);
+      if (nameMatches.length === 1) {
+        targetUser = nameMatches[0];
+      } else if (nameMatches.length > 1) {
+        const list = nameMatches.map((u) => `• ${u.name}（${u.email || '无邮箱'}）`).join('\n');
+        await replyToChat(chatId, messageId,
+          `⚠️ 找到多个名字相似的用户，请用邮箱指定：\n\n${list}`
+        );
+        return true;
+      }
+    }
 
     if (!targetUser || !targetUser.feishu_user_id) {
       await replyToChat(
         chatId,
         messageId,
-        `❌ 找不到用户「${target}」\n请使用已注册用户的邮箱地址，或先让对方发送一条消息完成注册`
+        `❌ 找不到用户「${target}」\n支持邮箱、姓名搜索。请先让对方发送一条飞书消息完成注册。`
       );
       return true;
     }

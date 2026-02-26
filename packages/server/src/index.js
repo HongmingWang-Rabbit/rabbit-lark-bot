@@ -12,6 +12,7 @@ const apiRoutes = require('./routes/api');
 const agentRoutes = require('./routes/agent');
 const userRoutes = require('./routes/users');
 const { sendPendingReminders } = require('./services/reminder');
+const sessions = require('./db/sessions');
 
 // 验证环境变量
 validateEnv();
@@ -89,6 +90,11 @@ async function start() {
     runReminderCron();
     setInterval(runReminderCron, REMINDER_CHECK_MINUTES * 60 * 1000);
     logger.info(`⏰ Reminder cron started`, { checkIntervalMinutes: REMINDER_CHECK_MINUTES });
+
+    // Session cleanup: prune expired rows every 30 minutes
+    setInterval(() => sessions.cleanup().catch((err) => {
+      logger.error('Session cleanup error', { error: err.message });
+    }), 30 * 60 * 1000);
     // ─────────────────────────────────────────────────────────────────────────
 
   } catch (err) {
