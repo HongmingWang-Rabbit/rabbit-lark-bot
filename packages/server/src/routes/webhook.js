@@ -138,12 +138,32 @@ router.post('/event', async (req, res) => {
     const chatId = event.message?.chat_id;
     const messageId = event.message?.message_id;
     const openId = event.sender?.sender_id?.open_id;
+    const unionId = event.sender?.sender_id?.union_id;
+
+    // ── [1] 收到消息，打印原始 ID ─────────────────────────────────────────
+    logger.info('📨 Message received', {
+      eventId,
+      chatId,
+      messageId,
+      msgType: event.message?.message_type,
+      senderId:  senderId  || '(null)',
+      openId:    openId    || '(null)',
+      unionId:   unionId   || '(null)',
+      chatType:  event.message?.chat_type,
+    });
 
     // 自动注册用户 + 补全信息
     let user = null;
     if (openId || senderId) {
       try {
         const existing = await usersDb.findByOpenId(openId);
+        logger.info('👤 User lookup', {
+          openId,
+          found: !!existing,
+          existingName: existing?.name || null,
+          existingEmail: existing?.email || null,
+          existingPhone: existing?.phone || null,
+        });
 
         // Resolve user info from Feishu Contact API when:
         //   a) new user (no DB record), or
@@ -152,11 +172,28 @@ router.post('/event', async (req, res) => {
         let userInfo = null;
         const needsResolve = !existing || (!existing.name && !existing.email);
         if (needsResolve) {
+          const resolveBy = senderId ? `user_id=${senderId}` : `open_id=${openId}`;
+          logger.info('🔍 Resolving user info from Feishu Contact API', { resolveBy });
           userInfo = await (
             senderId
               ? feishu.resolveUserInfo(senderId, 'user_id')
               : feishu.resolveUserInfo(openId, 'open_id')
-          ).catch(() => null);
+          ).catch((err) => {
+            logger.warn('resolveUserInfo failed', { error: err.message });
+            return null;
+          });
+          logger.info('🔍 resolveUserInfo result', {
+            success: !!userInfo,
+            name:  userInfo?.name  || null,
+            email: userInfo?.email || null,
+            phone: userInfo?.mobile || null,
+            feishuUserId: userInfo?.feishuUserId || null,
+            reason: userInfo ? 'ok' : 'null (no contact permission or API error)',
+          });
+        } else {
+          logger.info('⏭️  Skip resolveUserInfo (user already has name/email)', {
+            name: existing.name, email: existing.email,
+          });
         }
 
         user = await usersDb.autoProvision({
@@ -165,6 +202,16 @@ router.post('/event', async (req, res) => {
           phone: userInfo?.mobile || null,
           name: userInfo?.name || null,
           feishuUserId: senderId || userInfo?.feishuUserId || null,
+        });
+
+        logger.info('✅ User provisioned', {
+          userId:        user?.user_id,
+          name:          user?.name   || '(none)',
+          email:         user?.email  || '(none)',
+          phone:         user?.phone  || '(none)',
+          role:          user?.role,
+          feishuUserId:  user?.feishu_user_id || '(none)',
+          openId:        user?.open_id || '(none)',
         });
       } catch (provisionErr) {
         logger.warn('User auto-provision failed', { senderId, error: provisionErr.message });
@@ -178,10 +225,14 @@ router.post('/event', async (req, res) => {
       messageText = rawContent.text || '';
     } catch (_) {}
 
-    // 意图检测：greeting 或 menu → 发送动态菜单，跳过 AI
+    // ── [2] 意图检测 ──────────────────────────────────────────────────────
     const intent = detectIntent(messageText);
+    logger.info('🧭 Intent detected', {
+      intent,
+      text: messageText.slice(0, 80) || '(empty)',
+    });
+
     if (intent === 'greeting' || intent === 'menu') {
-      logger.info('Intent detected, sending menu', { senderId, intent });
       if (chatId) {
         const menuMsg = buildMenu(user || { role: 'user', configs: {} }, { isGreeting: intent === 'greeting' });
         feishu.sendMessage(chatId, menuMsg, 'chat_id').catch((err) => {
@@ -191,13 +242,14 @@ router.post('/event', async (req, res) => {
       return res.json({ success: true });
     }
 
-    // 权限检查：用户必须至少有一项功能权限
+    // ── [3] 权限检查 ──────────────────────────────────────────────────────
     if (user) {
       const resolved = resolveFeatures(user);
       user.resolvedFeatures = resolved;
-      const hasAnyFeature = Object.values(resolved).some(Boolean);
-      if (!hasAnyFeature) {
-        logger.info('User has no features, blocking message', { senderId });
+      const enabledFeatures = Object.entries(resolved).filter(([,v]) => v).map(([k]) => k);
+      logger.info('🔐 User features', { userId: user.user_id, enabled: enabledFeatures });
+      if (!enabledFeatures.length) {
+        logger.info('🚫 No features — blocking message', { userId: user.user_id });
         if (chatId) {
           feishu.sendMessage(chatId, '⚠️ 你目前没有任何可用功能，请联系管理员开通权限。', 'chat_id').catch(() => {});
         }
@@ -205,11 +257,15 @@ router.post('/event', async (req, res) => {
       }
     }
 
-    // ── 催办会话：数字选择（完成任务流程中途回复数字）─────────────────────
+    // ── [4] 会话上下文（数字选择） ────────────────────────────────────────
     const sessionKey = openId || senderId;
     const activeSession = getSession(sessionKey);
+    if (activeSession) {
+      logger.info('💬 Active session found', { step: activeSession.step, taskCount: activeSession.tasks?.length });
+    }
     if (activeSession?.step === 'complete_select' && /^\d+$/.test(messageText.trim())) {
       const idx = parseInt(messageText.trim(), 10) - 1;
+      logger.info('✔️  Session: completing task by number', { idx: idx + 1 });
       if (idx >= 0 && idx < activeSession.tasks.length) {
         const task = activeSession.tasks[idx];
         deleteSession(sessionKey);
@@ -225,9 +281,9 @@ router.post('/event', async (req, res) => {
       }
     }
 
-    // ── 催办直接命令（cuiban_view / cuiban_complete / cuiban_create）────────
+    // ── [5] 催办直接命令 ──────────────────────────────────────────────────
     if (['cuiban_view', 'cuiban_complete', 'cuiban_create'].includes(intent)) {
-      logger.info('Handling cuiban command', { intent, senderId });
+      logger.info('📋 Handling cuiban command', { intent, senderId, text: messageText.slice(0, 60) });
       const handled = await handleCuibanCommand({
         intent,
         text: messageText,
@@ -239,16 +295,16 @@ router.post('/event', async (req, res) => {
       }).catch((err) => {
         logger.error('Cuiban command error', { error: err.message });
         feishu.sendMessage(chatId, '⚠️ 命令处理失败，请稍后重试。', 'chat_id').catch(() => {});
-        return true; // mark as handled (error already sent)
+        return true;
       });
       if (handled) return res.json({ success: true });
     }
 
-    // 转发给配置的 AI Agent（附带用户权限上下文）
+    // ── [6] 转发给 AI Agent ────────────────────────────────────────────────
+    logger.info('🤖 Forwarding to AI agent', { userId: user?.user_id, intent });
     const apiBaseUrl = process.env.API_BASE_URL || `http://localhost:${process.env.PORT || 3456}`;
     agentForwarder.forwardToOwnerAgent(event, apiBaseUrl, user).catch(async (err) => {
       logger.error('Agent forwarding failed', { error: err.message });
-      // 通知用户转发失败
       if (chatId) {
         try {
           await feishu.sendMessage(chatId, '⚠️ 消息处理失败，请稍后重试。', 'chat_id');
