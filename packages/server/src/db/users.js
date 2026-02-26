@@ -62,25 +62,11 @@ const users = {
    */
   async searchByName(nameQuery, limit = 5) {
     if (!nameQuery) return [];
+    // Escape ILIKE special characters so user input is treated literally
+    const escaped = nameQuery.replace(/[%_\\]/g, '\\$&');
     const result = await pool.query(
       `SELECT * FROM users WHERE name ILIKE $1 ORDER BY name LIMIT $2`,
-      [`%${nameQuery}%`, limit]
-    );
-    return result.rows;
-  },
-
-  /**
-   * Search users by name (case-insensitive partial match).
-   * Returns up to `limit` results ordered by name.
-   * @param {string} nameQuery
-   * @param {number} [limit=5]
-   * @returns {Promise<object[]>}
-   */
-  async searchByName(nameQuery, limit = 5) {
-    if (!nameQuery) return [];
-    const result = await pool.query(
-      `SELECT * FROM users WHERE name ILIKE $1 ORDER BY name LIMIT $2`,
-      [`%${nameQuery}%`, limit]
+      [`%${escaped}%`, limit]
     );
     return result.rows;
   },
@@ -174,7 +160,7 @@ const users = {
        RETURNING *`,
       [userId, JSON.stringify(safeConfigs)]
     );
-    if (!result.rows[0]) throw new Error(`User not found: ${userId}`);
+    if (!result.rows[0]) throw new Error('User not found');
     return result.rows[0];
   },
 
@@ -191,7 +177,7 @@ const users = {
        RETURNING *`,
       [userId, name ?? null, email ?? null, phone ?? null]
     );
-    if (!result.rows[0]) throw new Error(`User not found: ${userId}`);
+    if (!result.rows[0]) throw new Error('User not found');
     return result.rows[0];
   },
 
@@ -201,7 +187,9 @@ const users = {
    */
   async setFeature(userId, featureId, enabled) {
     if (typeof enabled !== 'boolean') throw new Error('enabled must be boolean');
-    // Guard: featureId must be safe for jsonb path (alphanumeric + underscore only)
+    // SECURITY: featureId is interpolated into the jsonb_set path expression below.
+    // This regex is the CRITICAL security gate preventing SQL injection via path traversal.
+    // Do NOT weaken this pattern without a thorough security review.
     if (!/^[a-z0-9_]+$/i.test(featureId)) {
       throw new Error(`Invalid featureId: ${featureId}`);
     }
@@ -218,7 +206,7 @@ const users = {
        RETURNING *`,
       [userId, JSON.stringify(enabled), `{features,${featureId}}`]
     );
-    if (!result.rows[0]) throw new Error(`User not found: ${userId}`);
+    if (!result.rows[0]) throw new Error('User not found');
     return result.rows[0];
   },
 
@@ -233,7 +221,7 @@ const users = {
       'UPDATE users SET role = $2 WHERE user_id = $1 RETURNING *',
       [userId, role]
     );
-    if (!result.rows[0]) throw new Error(`User not found: ${userId}`);
+    if (!result.rows[0]) throw new Error('User not found');
     return result.rows[0];
   },
 
@@ -268,6 +256,8 @@ const users = {
 
   /**
    * Check if a user exists and has admin or superadmin role.
+   * NOTE: This checks users.role (feature permissions). For API access control,
+   * see admins.isAdmin() in db/index.js which checks the separate admins table.
    */
   async isAdmin(userId) {
     const result = await pool.query(

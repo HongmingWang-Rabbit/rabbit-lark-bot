@@ -100,36 +100,72 @@ export interface ApiError {
   error: string;
 }
 
+// ============ SWR cache key constants ============
+// Use these in useSWR() and mutate() to ensure consistent cache keys across pages.
+
+export const SWR_KEYS = {
+  dashboard: '/dashboard',
+  tasks: '/tasks',
+  users: '/users',
+  features: '/users/_features',
+} as const;
+
 // ============ API 配置 ============
 
 // Client always calls /api (relative) — Next.js rewrites proxy to the backend server
 const API_BASE = '/api';
+// TODO: NEXT_PUBLIC_API_KEY is inlined into the client bundle, making it extractable.
+// For production, route API calls through Next.js server-side API routes that inject
+// the key server-side, and remove the NEXT_PUBLIC_ prefix.
 const API_KEY = process.env.NEXT_PUBLIC_API_KEY || '';
+const FETCH_TIMEOUT_MS = 15_000;
 
 // ============ 请求封装 ============
 
 export async function fetchAPI<T>(path: string, options?: RequestInit): Promise<T> {
-  const headers: HeadersInit = {
-    'Content-Type': 'application/json',
-    ...options?.headers,
+  const headers: Record<string, string> = {
+    ...(options?.headers as Record<string, string>),
   };
+
+  // Only set Content-Type for requests with a body
+  if (options?.body) {
+    headers['Content-Type'] = 'application/json';
+  }
 
   // 添加 API Key 认证
   if (API_KEY) {
-    (headers as Record<string, string>)['X-API-Key'] = API_KEY;
+    headers['X-API-Key'] = API_KEY;
   }
 
-  const res = await fetch(`${API_BASE}${path}`, {
-    ...options,
-    headers,
-  });
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
 
-  if (!res.ok) {
-    const errorData: ApiError = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(errorData.error || `API Error: ${res.status}`);
+  try {
+    const res = await fetch(`${API_BASE}${path}`, {
+      ...options,
+      headers,
+      signal: controller.signal,
+    });
+
+    if (!res.ok) {
+      const errorData: ApiError = await res.json().catch(() => ({ error: res.statusText }));
+      throw new Error(errorData.error || `API Error: ${res.status}`);
+    }
+
+    const contentType = res.headers.get('content-type') || '';
+    if (!contentType.includes('application/json')) {
+      throw new Error(`Unexpected response type: ${contentType || 'unknown'}`);
+    }
+
+    return res.json();
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      throw new Error('Request timeout');
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeoutId);
   }
-
-  return res.json();
 }
 
 // ============ API 方法 ============
@@ -153,11 +189,12 @@ export const api = {
       body: JSON.stringify(data),
     }),
 
-  deleteTask: (id: string, userId?: string) =>
-    fetchAPI<{ success: boolean }>(`/tasks/${id}`, {
+  deleteTask: (id: string, userId?: string) => {
+    const query = userId ? `?userId=${encodeURIComponent(userId)}` : '';
+    return fetchAPI<{ success: boolean }>(`/tasks/${id}${query}`, {
       method: 'DELETE',
-      body: JSON.stringify({ userId }),
-    }),
+    });
+  },
 
   // Admins
   getAdmins: () => fetchAPI<Admin[]>('/admins'),
@@ -184,7 +221,12 @@ export const api = {
 
   // Audit
   getAuditLogs: (params?: { limit?: number; offset?: number; userId?: string; action?: string }) => {
-    const query = params ? new URLSearchParams(params as Record<string, string>).toString() : '';
+    if (!params) return fetchAPI<AuditLog[]>('/audit');
+    const filtered: Record<string, string> = {};
+    for (const [k, v] of Object.entries(params)) {
+      if (v !== undefined && v !== null) filtered[k] = String(v);
+    }
+    const query = new URLSearchParams(filtered).toString();
     return fetchAPI<AuditLog[]>(`/audit${query ? `?${query}` : ''}`);
   },
 

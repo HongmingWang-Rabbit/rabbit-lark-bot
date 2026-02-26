@@ -15,14 +15,13 @@
 - [API Authentication](api.md#认证) - How to authenticate API requests
 
 ### For Developers
-- [Architecture Overview](architecture.md#overview) - System structure
-- [Database Schema](architecture.md#database-schema) - Table definitions
-- [Security](architecture.md#security) - Auth and rate limiting
+- [Architecture Overview](architecture.md#系统架构) - System structure
+- [Database Schema](architecture.md#数据库-schema) - Table definitions
+- [Security](architecture.md#安全) - Auth and rate limiting
 
 ### For Operators
-- [Deployment](architecture.md#deployment) - Docker setup
-- [Configuration](architecture.md#configuration) - Feishu and Bitable setup
-- [Environment Variables](architecture.md#environment-variables) - Required configs
+- [Deployment](architecture.md#部署) - Docker setup
+- [Environment Variables](../CLAUDE.md) - See CLAUDE.md for env var reference
 
 ## Contributing
 

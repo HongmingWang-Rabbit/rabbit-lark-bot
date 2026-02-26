@@ -8,7 +8,7 @@
 const pool = require('./pool');
 const logger = require('../utils/logger');
 
-const SESSION_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const SESSION_TTL_MS = parseInt(process.env.SESSION_TTL_MS, 10) || 5 * 60 * 1000; // default 5 minutes
 
 /**
  * Write or overwrite a session.

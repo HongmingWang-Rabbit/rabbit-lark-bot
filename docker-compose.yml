@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   postgres:
     image: postgres:16-alpine
@@ -7,7 +5,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-rabbit}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rabbit_secret_123}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: ${POSTGRES_DB:-rabbit_lark}
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -32,27 +30,54 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgres://${POSTGRES_USER:-rabbit}:${POSTGRES_PASSWORD:-rabbit_secret_123}@postgres:5432/${POSTGRES_DB:-rabbit_lark}
+      DATABASE_URL: postgres://${POSTGRES_USER:-rabbit}:${POSTGRES_PASSWORD:?}@postgres:5432/${POSTGRES_DB:-rabbit_lark}
+      NODE_ENV: production
       FEISHU_APP_ID: ${FEISHU_APP_ID}
       FEISHU_APP_SECRET: ${FEISHU_APP_SECRET}
-      REMINDER_APP_TOKEN: ${REMINDER_APP_TOKEN}
-      REMINDER_TABLE_ID: ${REMINDER_TABLE_ID}
+      FEISHU_ENCRYPT_KEY: ${FEISHU_ENCRYPT_KEY:-}
+      API_KEY: ${API_KEY:?Set API_KEY in .env}
+      CORS_ORIGIN: ${CORS_ORIGIN}
+      AGENT_WEBHOOK_URL: ${AGENT_WEBHOOK_URL:-}
+      AGENT_API_KEY: ${AGENT_API_KEY:-}
+      AGENT_TIMEOUT_MS: ${AGENT_TIMEOUT_MS:-30000}
+      ENABLE_BUILTIN_BOT: ${ENABLE_BUILTIN_BOT:-true}
+      API_BASE_URL: ${API_BASE_URL:-}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
       PORT: 3456
     ports:
-      - "3456:3456"
+      - "127.0.0.1:3456:3456"
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:3456/health').then(r=>{process.exit(r.ok?0:1)}).catch(()=>process.exit(1))\""]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   web:
     build:
       context: ./packages/web
       dockerfile: Dockerfile
+      # NOTE: NEXT_PUBLIC_* vars are passed at runtime (not build time) to avoid
+      # baking secrets into Docker image layers visible via `docker history`.
+      args: {}
     container_name: rabbit-lark-web
     restart: unless-stopped
     depends_on:
-      - server
+      server:
+        condition: service_healthy
     environment:
+      # Used by next.config.js rewrites (server-side only, despite NEXT_PUBLIC_ prefix)
       NEXT_PUBLIC_API_URL: http://server:3456/api
+      NEXT_PUBLIC_ADMIN_PASSWORD: ${NEXT_PUBLIC_ADMIN_PASSWORD:-}
+      NEXT_PUBLIC_API_KEY: ${NEXT_PUBLIC_API_KEY:-}
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:3000/').then(r=>{process.exit(r.ok?0:1)}).catch(()=>process.exit(1))\""]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
 
 volumes:
   postgres_data:

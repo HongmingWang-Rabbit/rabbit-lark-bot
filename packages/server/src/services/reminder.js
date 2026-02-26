@@ -75,9 +75,21 @@ async function getAllTasks(limit = 100) {
  * @param {number} [params.reminderIntervalHours] - Hours between reminders (0 = disabled, default 24)
  */
 async function createTask({ title, assigneeId, assigneeOpenId, assigneeName, deadline, note, creatorId, reporterOpenId, reminderIntervalHours }) {
-  const deadlineDate = deadline
-    ? new Date(deadline)
-    : new Date(Date.now() + DEFAULT_DEADLINE_DAYS * MS_PER_DAY);
+  let deadlineDate;
+  if (deadline) {
+    // Strict date validation: accept YYYY-MM-DD or ISO 8601
+    if (typeof deadline === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(deadline)) {
+      // Append T00:00:00 to avoid timezone-shift issues with date-only strings
+      deadlineDate = new Date(deadline + 'T00:00:00');
+    } else {
+      deadlineDate = new Date(deadline);
+    }
+    if (isNaN(deadlineDate.getTime())) {
+      throw new Error(`Invalid deadline date: ${deadline}`);
+    }
+  } else {
+    deadlineDate = new Date(Date.now() + DEFAULT_DEADLINE_DAYS * MS_PER_DAY);
+  }
 
   const intervalHours = (reminderIntervalHours !== undefined && reminderIntervalHours !== null)
     ? parseInt(reminderIntervalHours, 10)
@@ -135,7 +147,7 @@ async function completeTask(taskId, proof, userId, completerName) {
   const result = await pool.query(
     `UPDATE tasks
      SET status = 'completed', proof = $2, completed_at = NOW()
-     WHERE id = $1
+     WHERE id = $1 AND status = 'pending'
      RETURNING *`,
     [taskId, proof || null]
   );
@@ -234,17 +246,44 @@ async function sendPendingReminders() {
   const now = new Date();
   let totalSent = 0;
 
-  // ── Part 1: One-time deadline-overdue alert ───────────────────────────────
-  // Fires ONCE the moment a deadline passes — notifies BOTH assignee and reporter.
-  // Tracked via deadline_notified_at so it never fires twice for the same task.
-  const { rows: overdueTasks } = await pool.query(`
-    SELECT * FROM tasks
-    WHERE status = 'pending'
-      AND deadline IS NOT NULL
-      AND deadline < NOW()
-      AND deadline_notified_at IS NULL
-  `);
+  // ── Part 1: One-time deadline-overdue alert ─────────────────────────────
+  // Uses FOR UPDATE SKIP LOCKED to prevent concurrent cron runs from
+  // double-sending the same alert.
+  let overdueTasks = [];
+  {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const { rows } = await client.query(`
+        SELECT * FROM tasks
+        WHERE status = 'pending'
+          AND deadline IS NOT NULL
+          AND deadline < NOW()
+          AND deadline_notified_at IS NULL
+        FOR UPDATE SKIP LOCKED
+      `);
+      overdueTasks = rows;
 
+      if (overdueTasks.length > 0) {
+        for (const task of overdueTasks) {
+          await client.query(
+            'UPDATE tasks SET deadline_notified_at = NOW() WHERE id = $1',
+            [task.id]
+          );
+        }
+      }
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK').catch((rollbackErr) => {
+        logger.error('Rollback failed', { error: rollbackErr.message });
+      });
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  // Send overdue notifications (outside any DB client hold)
   if (overdueTasks.length > 0) {
     logger.info(`⏰ Deadline alert: ${overdueTasks.length} task(s) newly overdue`);
 
@@ -258,7 +297,6 @@ async function sendPendingReminders() {
           minute: '2-digit',
         });
 
-        // Notify assignee — urgent tone
         if (task.assignee_open_id) {
           const assigneeMsg =
             `🚨 催办任务已逾期，请尽快完成：\n\n` +
@@ -270,7 +308,6 @@ async function sendPendingReminders() {
           });
         }
 
-        // Notify reporter — formal overdue report
         if (task.reporter_open_id) {
           const reporterMsg =
             `📢 催办任务逾期通报：\n\n` +
@@ -283,11 +320,6 @@ async function sendPendingReminders() {
           });
         }
 
-        // Mark deadline notification as sent
-        await pool.query(
-          'UPDATE tasks SET deadline_notified_at = NOW() WHERE id = $1',
-          [task.id]
-        );
         logger.info('Deadline alert sent', {
           taskId: task.id,
           title: task.title,
@@ -299,17 +331,40 @@ async function sendPendingReminders() {
     totalSent += overdueTasks.length;
   }
 
-  // ── Part 2: Regular interval reminders (assignee only) ───────────────────
-  // Fires every reminder_interval_hours — keeps nudging assignee until complete.
-  const { rows: intervalTasks } = await pool.query(`
-    SELECT * FROM tasks
-    WHERE status = 'pending'
-      AND reminder_interval_hours > 0
-      AND assignee_open_id IS NOT NULL
-      AND NOW() >= COALESCE(last_reminded_at, created_at) + (reminder_interval_hours || ' hours')::interval
-    ORDER BY deadline ASC NULLS LAST
-  `);
+  // ── Part 2: Regular interval reminders (assignee only) ─────────────────
+  let intervalTasks = [];
+  {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const { rows } = await client.query(`
+        SELECT * FROM tasks
+        WHERE status = 'pending'
+          AND reminder_interval_hours > 0
+          AND assignee_open_id IS NOT NULL
+          AND NOW() >= COALESCE(last_reminded_at, created_at) + (reminder_interval_hours || ' hours')::interval
+        ORDER BY deadline ASC NULLS LAST
+        FOR UPDATE SKIP LOCKED
+      `);
+      intervalTasks = rows;
 
+      if (intervalTasks.length > 0) {
+        for (const task of intervalTasks) {
+          await client.query('UPDATE tasks SET last_reminded_at = NOW() WHERE id = $1', [task.id]);
+        }
+      }
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK').catch((rollbackErr) => {
+        logger.error('Rollback failed', { error: rollbackErr.message });
+      });
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  // Send interval reminders (outside any DB client hold)
   if (intervalTasks.length > 0) {
     const results = await Promise.allSettled(
       intervalTasks.map(async (task) => {
@@ -333,7 +388,6 @@ async function sendPendingReminders() {
           logger.warn('Reminder: failed to DM assignee', { taskId: task.id, error: err.message });
         });
 
-        await pool.query('UPDATE tasks SET last_reminded_at = NOW() WHERE id = $1', [task.id]);
         logger.info('Interval reminder sent', { taskId: task.id, title: task.title, isOverdue });
       })
     );

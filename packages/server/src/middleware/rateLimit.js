@@ -1,15 +1,23 @@
 const logger = require('../utils/logger');
 
 /**
- * 简单的内存 rate limiter
- * 生产环境建议使用 Redis
+ * 简单的内存 rate limiter（单实例）
+ * 注意：计数器存储在进程内存中，多实例部署时每个实例独立计数，
+ * 有效限流阈值 = maxRequests × 实例数。生产多实例建议使用 Redis。
  */
+const MAX_RATE_LIMIT_ENTRIES = 10000; // prevent unbounded memory growth under attack
+
 class RateLimiter {
   constructor() {
     this.requests = new Map();
-    
+
     // 每分钟清理过期记录
-    setInterval(() => this.cleanup(), 60 * 1000);
+    this._cleanupInterval = setInterval(() => this.cleanup(), 60 * 1000);
+    this._cleanupInterval.unref(); // don't keep process alive just for cleanup
+  }
+
+  destroy() {
+    clearInterval(this._cleanupInterval);
   }
 
   cleanup() {
@@ -26,12 +34,17 @@ class RateLimiter {
     const data = this.requests.get(key);
 
     if (!data || now - data.windowStart > windowMs) {
+      // Evict oldest entries if map is too large (prevent memory exhaustion)
+      if (this.requests.size >= MAX_RATE_LIMIT_ENTRIES) {
+        const oldest = this.requests.keys().next().value;
+        this.requests.delete(oldest);
+      }
       this.requests.set(key, { count: 1, windowStart: now, windowMs });
       return false;
     }
 
     data.count++;
-    if (data.count > maxRequests) {
+    if (data.count >= maxRequests) {
       return true;
     }
 

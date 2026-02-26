@@ -11,12 +11,6 @@ function validateEnv() {
     'FEISHU_APP_SECRET',
   ];
 
-  // 内置催办功能需要（ENABLE_BUILTIN_BOT !== 'false' 时）
-  const reminderRequired = [
-    'REMINDER_APP_TOKEN',
-    'REMINDER_TABLE_ID',
-  ];
-
   const optional = [
     'PORT',
     'NODE_ENV',
@@ -28,6 +22,8 @@ function validateEnv() {
     'AGENT_API_KEY',
     'AGENT_TIMEOUT_MS',
     'ENABLE_BUILTIN_BOT',
+    'CORS_ORIGIN',
+    'REQUIRE_AUTH',
   ];
 
   const missing = [];
@@ -42,25 +38,10 @@ function validateEnv() {
     }
   }
 
-  // 如果启用内置 bot，检查 reminder 变量
-  const builtinBotEnabled = process.env.ENABLE_BUILTIN_BOT !== 'false';
-  if (builtinBotEnabled) {
-    for (const key of reminderRequired) {
-      if (!process.env[key]) {
-        missing.push(key);
-      } else {
-        present.push(key);
-      }
-    }
-  }
+  const builtinBotEnabled = (process.env.ENABLE_BUILTIN_BOT ?? 'true') !== 'false';
 
   if (missing.length > 0) {
-    logger.error('Missing required environment variables', { missing });
-    logger.error(`Missing: ${missing.join(', ')}`);
-    if (builtinBotEnabled && (missing.includes('REMINDER_APP_TOKEN') || missing.includes('REMINDER_TABLE_ID'))) {
-      logger.error('Tip: Set ENABLE_BUILTIN_BOT=false if you only want message forwarding');
-    }
-    logger.error('Please check your .env file');
+    logger.error('Missing required environment variables — check your .env file', { missing });
     process.exit(1);
   }
 
@@ -78,9 +59,21 @@ function validateEnv() {
   if (!process.env.API_BASE_URL) {
     warnings.push('API_BASE_URL not set - reply_via.api will use localhost');
   }
+  if (!process.env.CORS_ORIGIN) {
+    warnings.push('CORS_ORIGIN not set - CORS allows all origins (*)');
+  }
 
-  if (warnings.length > 0 && process.env.NODE_ENV === 'production') {
-    logger.warn('Security/Config warnings', { warnings });
+  if (warnings.length > 0) {
+    if (process.env.NODE_ENV === 'production') {
+      logger.error('Production security warnings — fix before deploying', { warnings });
+      // Critical security vars must be set in production
+      if (!process.env.API_KEY || !process.env.FEISHU_ENCRYPT_KEY) {
+        logger.error('Refusing to start: API_KEY and FEISHU_ENCRYPT_KEY are required in production');
+        process.exit(1);
+      }
+    } else {
+      logger.warn('Security/Config warnings', { warnings });
+    }
   }
 
   logger.info('Environment validated', { 

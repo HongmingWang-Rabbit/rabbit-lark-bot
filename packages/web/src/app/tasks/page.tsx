@@ -2,14 +2,15 @@
 
 import { useState, useMemo } from 'react';
 import useSWR, { mutate } from 'swr';
-import { api, Task, User, CreateTaskParams } from '@/lib/api';
+import { api, SWR_KEYS, Task, User, CreateTaskParams } from '@/lib/api';
 import UserCombobox from '@/components/UserCombobox';
+import { LoadingState, ErrorState } from '@/components/StatusStates';
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 /** Build open_id → display name map from the users list */
 function useUserMap() {
-  const { data: users } = useSWR<User[]>('/users', api.getUsers);
+  const { data: users } = useSWR<User[]>(SWR_KEYS.users, api.getUsers);
   return useMemo(() => {
     const map = new Map<string, string>();
     users?.forEach((u) => {
@@ -27,15 +28,15 @@ function resolveName(openId: string | null, userMap: Map<string, string>) {
 // ── page ─────────────────────────────────────────────────────────────────────
 
 export default function TasksPage() {
-  const { data: tasks, error, isLoading } = useSWR<Task[]>('/tasks', api.getTasks);
+  const { data: tasks, error, isLoading } = useSWR<Task[]>(SWR_KEYS.tasks, api.getTasks);
   const userMap = useUserMap();
   const [showForm, setShowForm] = useState(false);
 
   if (isLoading) return <LoadingState />;
-  if (error) return <ErrorState message={error.message} />;
+  if (error) return <ErrorState message={error.message} retryKey={SWR_KEYS.tasks} />;
 
-  const pending   = (tasks ?? []).filter(t => t.status === 'pending');
-  const completed = (tasks ?? []).filter(t => t.status === 'completed');
+  const pending   = useMemo(() => (tasks ?? []).filter(t => t.status === 'pending'), [tasks]);
+  const completed = useMemo(() => (tasks ?? []).filter(t => t.status === 'completed'), [tasks]);
 
   return (
     <div>
@@ -58,7 +59,7 @@ export default function TasksPage() {
         <TaskForm
           onSuccess={() => {
             setShowForm(false);
-            mutate('/tasks');
+            mutate(SWR_KEYS.tasks);
           }}
         />
       )}
@@ -70,31 +71,10 @@ export default function TasksPage() {
 
 // ── sub-components ────────────────────────────────────────────────────────────
 
-function LoadingState() {
-  return (
-    <div className="text-center py-12">
-      <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500" />
-      <p className="mt-2 text-gray-500">加载中...</p>
-    </div>
-  );
-}
-
-function ErrorState({ message }: { message: string }) {
-  return (
-    <div className="text-center py-12">
-      <p className="text-red-500">❌ 加载失败</p>
-      <p className="text-sm text-gray-500 mt-2">{message}</p>
-      <button onClick={() => mutate('/tasks')} className="mt-4 text-blue-500 hover:underline">
-        重试
-      </button>
-    </div>
-  );
-}
-
 function TaskTable({ tasks, userMap }: { tasks: Task[]; userMap: Map<string, string> }) {
   return (
     <div className="bg-white rounded-lg shadow overflow-x-auto">
-      <table className="w-full min-w-[700px]">
+      <table className="w-full min-w-[700px]" aria-label="催办任务列表">
         <thead className="bg-gray-50">
           <tr>
             <th className="px-4 py-3 text-left text-sm font-medium text-gray-500">任务名称</th>
@@ -123,30 +103,34 @@ function TaskTable({ tasks, userMap }: { tasks: Task[]; userMap: Map<string, str
 
 function TaskRow({ task, userMap }: { task: Task; userMap: Map<string, string> }) {
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState<'complete' | 'delete' | null>(null);
 
   const handleComplete = async () => {
-    if (!confirm('确认标记为完成？')) return;
     setLoading(true);
+    setError(null);
     try {
       await api.completeTask(String(task.id), {});
-      mutate('/tasks');
+      mutate(SWR_KEYS.tasks);
     } catch (err) {
-      alert(err instanceof Error ? err.message : '操作失败');
+      setError(err instanceof Error ? err.message : '操作失败');
     } finally {
       setLoading(false);
+      setConfirming(null);
     }
   };
 
   const handleDelete = async () => {
-    if (!confirm('确认删除此任务？')) return;
     setLoading(true);
+    setError(null);
     try {
       await api.deleteTask(String(task.id));
-      mutate('/tasks');
+      mutate(SWR_KEYS.tasks);
     } catch (err) {
-      alert(err instanceof Error ? err.message : '操作失败');
+      setError(err instanceof Error ? err.message : '操作失败');
     } finally {
       setLoading(false);
+      setConfirming(null);
     }
   };
 
@@ -154,55 +138,99 @@ function TaskRow({ task, userMap }: { task: Task; userMap: Map<string, string> }
   const reporterName = resolveName(task.reporter_open_id, userMap);
 
   return (
-    <tr className={`hover:bg-gray-50 ${loading ? 'opacity-50' : ''}`}>
-      <td className="px-4 py-3 font-medium">
-        {task.title}
-        {task.note && <p className="text-xs text-gray-400 mt-0.5">{task.note}</p>}
-      </td>
-      <td className="px-4 py-3 text-gray-600">{assigneeName}</td>
-      <td className="px-4 py-3 text-gray-600">
-        {task.reporter_open_id ? (
-          <span title={task.reporter_open_id}>{reporterName}</span>
-        ) : (
-          <span className="text-gray-300">—</span>
-        )}
-      </td>
-      <td className="px-4 py-3">
-        <StatusBadge status={task.status} completedAt={task.completed_at} />
-      </td>
-      <td className="px-4 py-3 text-sm text-gray-500">
-        {task.deadline
-          ? new Date(task.deadline).toLocaleDateString('zh-CN')
-          : <span className="text-gray-300">—</span>}
-      </td>
-      <td className="px-4 py-3 text-sm text-gray-500">
-        {task.reminder_interval_hours > 0
-          ? `每 ${task.reminder_interval_hours}h`
-          : <span className="text-gray-300">关闭</span>}
-      </td>
-      <td className="px-4 py-3 flex gap-3">
-        {task.status === 'pending' && (
-          <button
-            onClick={handleComplete}
-            disabled={loading}
-            className="text-green-600 hover:text-green-800 disabled:opacity-50"
-          >
-            完成
-          </button>
-        )}
-        <button
-          onClick={handleDelete}
-          disabled={loading}
-          className="text-red-600 hover:text-red-800 disabled:opacity-50"
-        >
-          删除
-        </button>
-      </td>
-    </tr>
+    <>
+      <tr className={`hover:bg-gray-50 ${loading ? 'opacity-50' : ''}`}>
+        <td className="px-4 py-3 font-medium">
+          {task.title}
+          {task.note && <p className="text-xs text-gray-400 mt-0.5">{task.note}</p>}
+        </td>
+        <td className="px-4 py-3 text-gray-600">{assigneeName}</td>
+        <td className="px-4 py-3 text-gray-600">
+          {task.reporter_open_id ? (
+            <span title={task.reporter_open_id}>{reporterName}</span>
+          ) : (
+            <span className="text-gray-300">—</span>
+          )}
+        </td>
+        <td className="px-4 py-3">
+          <StatusBadge status={task.status} />
+        </td>
+        <td className="px-4 py-3 text-sm text-gray-500">
+          {task.deadline
+            ? new Date(task.deadline).toLocaleDateString('zh-CN')
+            : <span className="text-gray-300">—</span>}
+        </td>
+        <td className="px-4 py-3 text-sm text-gray-500">
+          {task.reminder_interval_hours > 0
+            ? `每 ${task.reminder_interval_hours}h`
+            : <span className="text-gray-300">关闭</span>}
+        </td>
+        <td className="px-4 py-3">
+          <div className="flex gap-3 items-center">
+            {confirming ? (
+              <>
+                <span className="text-xs text-gray-500">
+                  {confirming === 'complete' ? '确认完成？' : '确认删除？'}
+                </span>
+                <button
+                  onClick={confirming === 'complete' ? handleComplete : handleDelete}
+                  disabled={loading}
+                  className={`text-xs font-medium px-2 py-0.5 rounded ${
+                    confirming === 'delete' ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'
+                  } disabled:opacity-50`}
+                >
+                  确认
+                </button>
+                <button
+                  onClick={() => setConfirming(null)}
+                  disabled={loading}
+                  className="text-xs text-gray-400 hover:text-gray-600"
+                >
+                  取消
+                </button>
+              </>
+            ) : (
+              <>
+                {task.status === 'pending' && (
+                  <button
+                    onClick={() => setConfirming('complete')}
+                    disabled={loading}
+                    aria-label={`完成任务「${task.title}」`}
+                    className="text-green-600 hover:text-green-800 disabled:opacity-50"
+                  >
+                    完成
+                  </button>
+                )}
+                <button
+                  onClick={() => setConfirming('delete')}
+                  disabled={loading}
+                  aria-label={`删除任务「${task.title}」`}
+                  className="text-red-600 hover:text-red-800 disabled:opacity-50"
+                >
+                  删除
+                </button>
+              </>
+            )}
+          </div>
+        </td>
+      </tr>
+      {error && (
+        <tr>
+          <td colSpan={7} className="px-4 py-2">
+            <div className="flex items-center gap-2 text-sm text-red-600 bg-red-50 rounded px-3 py-1.5">
+              <span>{error}</span>
+              <button onClick={() => setError(null)} className="text-red-400 hover:text-red-600 ml-auto">
+                &times;
+              </button>
+            </div>
+          </td>
+        </tr>
+      )}
+    </>
   );
 }
 
-function StatusBadge({ status, completedAt }: { status: Task['status']; completedAt: string | null }) {
+function StatusBadge({ status }: { status: Task['status'] }) {
   if (status === 'completed') {
     return (
       <span className="px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800">
@@ -220,7 +248,7 @@ function StatusBadge({ status, completedAt }: { status: Task['status']; complete
 // ── create form ───────────────────────────────────────────────────────────────
 
 function TaskForm({ onSuccess }: { onSuccess: () => void }) {
-  const { data: users = [] } = useSWR<User[]>('/users', api.getUsers);
+  const { data: users = [] } = useSWR<User[]>(SWR_KEYS.users, api.getUsers);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [form, setForm] = useState<{
@@ -331,7 +359,7 @@ function TaskForm({ onSuccess }: { onSuccess: () => void }) {
           <input
             type="number" min={0} max={168}
             value={form.reminderIntervalHours}
-            onChange={e => setForm({ ...form, reminderIntervalHours: Number(e.target.value) })}
+            onChange={e => setForm({ ...form, reminderIntervalHours: parseInt(e.target.value, 10) || 0 })}
             className="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
           />
         </div>

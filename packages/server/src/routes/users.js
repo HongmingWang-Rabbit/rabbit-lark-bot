@@ -14,6 +14,7 @@ const router = express.Router();
 const users = require('../db/users');
 const { listFeatures, resolveFeatures, getFeature } = require('../features');
 const logger = require('../utils/logger');
+const { safeErrorMessage } = require('../utils/safeError');
 
 // ── List available features (must be before /:userId routes) ───────────────
 
@@ -28,13 +29,13 @@ router.get('/', async (req, res) => {
     const { role, limit, offset } = req.query;
     const list = await users.list({
       role,
-      limit: limit ? parseInt(limit) : 100,
-      offset: offset ? parseInt(offset) : 0,
+      limit: Math.min(parseInt(limit) || 100, 500),
+      offset: Math.max(parseInt(offset) || 0, 0),
     });
     res.json({ success: true, users: list.map(u => formatUser(u, true)) });
   } catch (err) {
     logger.error('List users failed', { error: err.message });
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: safeErrorMessage(err) });
   }
 });
 
@@ -47,23 +48,28 @@ router.get('/:userId', async (req, res) => {
     res.json({ success: true, user: formatUser(user, true) });
   } catch (err) {
     logger.error('Get user failed', { error: err.message });
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: safeErrorMessage(err) });
   }
 });
 
 // ── Create / upsert user ────────────────────────────────────────────────────
 
+const VALID_ROLES = ['superadmin', 'admin', 'user'];
+
 router.post('/', async (req, res) => {
   try {
     const { userId, openId, name, email, phone, role, configs } = req.body;
     if (!userId) return res.status(400).json({ error: 'userId is required' });
+    if (role && !VALID_ROLES.includes(role)) {
+      return res.status(400).json({ error: `Invalid role: ${role}. Must be one of: ${VALID_ROLES.join(', ')}` });
+    }
 
     const user = await users.upsert({ userId, openId, name, email, phone, role, configs });
     logger.info('User upserted', { userId, role: user.role });
     res.json({ success: true, user: formatUser(user, true) });
   } catch (err) {
     logger.error('Upsert user failed', { error: err.message });
-    res.status(400).json({ error: err.message });
+    res.status(400).json({ error: safeErrorMessage(err) });
   }
 });
 
@@ -77,7 +83,7 @@ router.patch('/:userId', async (req, res) => {
     let user = await users.getById(userId);
     if (!user) return res.status(404).json({ error: 'User not found' });
 
-    if (role) user = await users.setRole(userId, role);
+    if (role !== undefined) user = await users.setRole(userId, role);
     if (configs) user = await users.updateConfigs(userId, configs);
     if (name !== undefined || email !== undefined || phone !== undefined) {
       user = await users.updateProfile(userId, { name, email, phone });
@@ -87,7 +93,7 @@ router.patch('/:userId', async (req, res) => {
     res.json({ success: true, user: formatUser(user, true) });
   } catch (err) {
     logger.error('Update user failed', { error: err.message });
-    res.status(400).json({ error: err.message });
+    res.status(400).json({ error: safeErrorMessage(err) });
   }
 });
 
@@ -110,7 +116,7 @@ router.patch('/:userId/features/:featureId', async (req, res) => {
     res.json({ success: true, user: formatUser(user, true) });
   } catch (err) {
     logger.error('Set feature failed', { error: err.message });
-    res.status(400).json({ error: err.message });
+    res.status(400).json({ error: safeErrorMessage(err) });
   }
 });
 
@@ -124,7 +130,7 @@ router.delete('/:userId', async (req, res) => {
     res.json({ success: true });
   } catch (err) {
     logger.error('Remove user failed', { error: err.message });
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: safeErrorMessage(err) });
   }
 });
 

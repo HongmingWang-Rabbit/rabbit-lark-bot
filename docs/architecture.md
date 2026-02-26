@@ -54,7 +54,8 @@ src/
 │   └── users.js           # 用户管理 API
 ├── services/
 │   ├── reminder.js        # 催办任务：CRUD + 提醒 cron
-│   └── agentForwarder.js  # 消息转发给 AI Agent
+│   ├── agentForwarder.js  # 消息转发给 AI Agent
+│   └── cuibanHandler.js   # 催办命令路由（view/complete/create）
 ├── db/
 │   ├── pool.js            # pg 连接池
 │   ├── users.js           # 用户 CRUD + autoProvision
@@ -65,12 +66,14 @@ src/
 ├── feishu/
 │   └── client.js          # Feishu REST API（消息/联系人/多维表格）
 ├── middleware/
-│   ├── auth.js            # API Key 认证
-│   └── rateLimit.js       # 限流（API 100/min，Webhook 200/min）
+│   ├── auth.js            # API Key 认证（SHA-256 + timingSafeEqual）+ requireAdmin（deprecated）
+│   └── rateLimit.js       # 内存限流（API 100/min，Webhook 200/min，10k cap，单实例）
 └── utils/
     ├── intentDetector.js  # 消息意图分类
     ├── menuBuilder.js     # 动态权限菜单
-    └── logger.js          # 结构化日志（winston）
+    ├── logger.js          # 自定义结构化日志（文件轮转 + stdout）
+    ├── safeError.js       # 生产环境安全错误消息
+    └── validateEnv.js     # 启动时环境变量校验
 ```
 
 ### packages/web
@@ -83,9 +86,11 @@ src/
 │   ├── users/page.tsx      # 用户管理（角色/功能/信息）
 │   └── layout.tsx / NavBar.tsx
 ├── components/
-│   └── UserCombobox.tsx    # 用户搜索下拉（按姓名/邮箱过滤，返回 openId）
+│   ├── UserCombobox.tsx    # 用户搜索下拉（按姓名/邮箱过滤，返回 openId）
+│   └── StatusStates.tsx    # 共享加载/错误/空状态组件
 └── lib/
-    └── api.ts              # API 客户端 + TypeScript 类型
+    ├── api.ts              # API 客户端 + TypeScript 类型 + SWR_KEYS
+    └── auth.tsx            # 客户端密码认证（AuthProvider + LoginScreen）
 ```
 
 ---
@@ -287,12 +292,17 @@ sendPendingReminders()
 
 ```yaml
 services:
-  rabbit-lark-db:     # PostgreSQL 15
-  rabbit-lark-server: # Express (port 3456)
-  rabbit-lark-web:    # Next.js standalone (port 3000)
+  postgres:            # PostgreSQL 16-alpine，health check via pg_isready
+  server:              # Express (port 3456)，NODE_ENV=production，health check via /health
+  web:                 # Next.js standalone (port 3000)，depends_on server healthy
 ```
 
-Server 容器通过 `extra_hosts: host.docker.internal` 访问宿主机上的 AI Agent（如 OpenClaw Gateway）。
+- 所有端口绑定 `127.0.0.1`（不暴露到公网）
+- `POSTGRES_PASSWORD` 必须在 `.env` 中设置（`${VAR:?}` 语法，缺失时 compose 启动失败）
+- Server 容器通过 `extra_hosts: host.docker.internal` 访问宿主机上的 AI Agent
+- 服务间通过 `condition: service_healthy` 确保启动顺序
+- Server 环境变量：`DATABASE_URL`, `FEISHU_APP_ID`, `FEISHU_APP_SECRET`, `FEISHU_ENCRYPT_KEY`, `API_KEY`, `CORS_ORIGIN`, `AGENT_WEBHOOK_URL`, `AGENT_API_KEY`, `AGENT_TIMEOUT_MS`, `ENABLE_BUILTIN_BOT`, `API_BASE_URL`, `LOG_LEVEL`
+- Web 构建参数：`NEXT_PUBLIC_ADMIN_PASSWORD`, `NEXT_PUBLIC_API_KEY`（通过 Docker build args 注入，因为 Next.js `NEXT_PUBLIC_*` 变量在构建时内联）
 
 ### 数据库迁移
 
@@ -314,8 +324,17 @@ Server 容器通过 `extra_hosts: host.docker.internal` 访问宿主机上的 AI
 
 | 层面 | 实现 |
 |------|------|
-| Webhook 解密 | AES-256-CBC，key = SHA256(FEISHU_ENCRYPT_KEY) |
-| 事件去重 | 内存 Map，event_id，5 分钟 TTL |
-| API 鉴权 | API_KEY via X-API-Key 或 Authorization: Bearer |
-| 限流 | API 100/min，Webhook 200/min（express-rate-limit） |
+| Webhook 签名 | SHA-256 签名验证基于原始请求 body 字节（`express.json({ verify })` 保留 raw body Buffer）；仅在 FEISHU_ENCRYPT_KEY 已配置时启用 |
+| Webhook 解密 | AES-256-CBC，key = SHA256(FEISHU_ENCRYPT_KEY)；加密体跳过签名验证（解密本身即认证） |
+| 事件去重 | 内存 Map，event_id，5 分钟 TTL（单实例，多实例无法共享） |
+| API 鉴权 | SHA-256 哈希 + `crypto.timingSafeEqual`，防止长度和时序侧信道；未设 API_KEY 时仅 `NODE_ENV=development` 放行 |
+| Body 大小限制 | `express.json({ limit: '1mb' })` 防止超大 payload |
+| 限流 | 自定义内存 rate limiter：API 100/min，Webhook 200/min，上限 10,000 条目（单实例，多实例阈值 = N 倍） |
+| 设置白名单 | `PUT /settings/:key` 仅接受预定义 key（`VALID_SETTING_KEYS`），防止任意键注入 |
+| 角色验证 | 用户创建/更新时验证 role 值；admin 表验证 admin 角色值 |
 | 权限检查 | resolveFeatures() 在每条消息处理前执行 |
+| 错误屏蔽 | 生产环境（`NODE_ENV=production`）错误响应替换为通用描述，不暴露内部细节 |
+| 日志安全 | Agent webhook URL 在日志中自动脱敏（仅保留 origin + pathname）；用户 ID 不包含在错误消息中 |
+| CORS | 可通过 `CORS_ORIGIN` 限制允许的跨域来源，默认 `*` |
+| 登录保护 | Web 管理后台连续 5 次密码错误后锁定 1 分钟 |
+| requireAdmin | **已弃用** — 读取可伪造的 `x-user-id`/`x-user-email` 头，每次调用记录警告日志 |

@@ -10,6 +10,7 @@ const router = express.Router();
 const feishu = require('../feishu/client');
 const logger = require('../utils/logger');
 const agentForwarder = require('../services/agentForwarder');
+const { safeErrorMessage } = require('../utils/safeError');
 
 /**
  * Detect receive_id_type based on ID format
@@ -17,7 +18,7 @@ const agentForwarder = require('../services/agentForwarder');
  * @returns {string} receive_id_type
  */
 function detectIdType(id) {
-  if (!id) return 'user_id';
+  if (!id) throw new Error('ID is required');
   if (id.startsWith('oc_')) return 'chat_id';  // 群聊 ID
   if (id.startsWith('ou_')) return 'open_id';  // open_id
   return 'user_id';  // 默认 user_id
@@ -35,7 +36,7 @@ router.post('/send', async (req, res) => {
       return res.status(400).json({ error: 'chat_id and content are required' });
     }
     
-    logger.info('Agent sending message', { chat_id, contentLength: content.length, msg_type });
+    logger.info('Agent sending message', { chat_id, contentLength: typeof content === 'string' ? content.length : JSON.stringify(content).length, msg_type });
     
     let message_id;
     // Use reply endpoint for threaded replies when message_id is provided
@@ -49,7 +50,7 @@ router.post('/send', async (req, res) => {
     res.json({ success: true, message_id });
   } catch (err) {
     logger.error('Agent send failed', { error: err.message });
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: safeErrorMessage(err) });
   }
 });
 
@@ -72,7 +73,7 @@ router.post('/reply', async (req, res) => {
     res.json({ success: true, message_id: reply_id });
   } catch (err) {
     logger.error('Agent reply failed', { error: err.message });
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: safeErrorMessage(err) });
   }
 });
 
@@ -95,7 +96,7 @@ router.post('/react', async (req, res) => {
     res.json({ success: true });
   } catch (err) {
     logger.error('Agent react failed', { error: err.message });
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: safeErrorMessage(err) });
   }
 });
 
@@ -121,7 +122,7 @@ router.get('/history', async (req, res) => {
     res.json({ success: true, messages });
   } catch (err) {
     logger.error('Agent history fetch failed', { error: err.message });
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: safeErrorMessage(err) });
   }
 });
 
@@ -140,7 +141,7 @@ router.get('/user/:user_id', async (req, res) => {
     res.json({ success: true, user });
   } catch (err) {
     logger.error('Agent user fetch failed', { error: err.message });
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: safeErrorMessage(err) });
   }
 });
 

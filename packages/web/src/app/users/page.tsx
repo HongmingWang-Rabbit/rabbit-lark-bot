@@ -1,8 +1,9 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect, useRef, useCallback, useId, type RefObject } from 'react';
 import useSWR, { mutate } from 'swr';
-import { api, User, Feature, UserRole } from '@/lib/api';
+import { api, SWR_KEYS, User, Feature, UserRole } from '@/lib/api';
+import { LoadingState, ErrorState } from '@/components/StatusStates';
 
 const ROLE_LABELS: Record<UserRole, string> = {
   superadmin: '超级管理员',
@@ -17,41 +18,62 @@ const ROLE_COLORS: Record<UserRole, string> = {
 };
 
 export default function UsersPage() {
-  const { data: users = [], error: usersErr, isLoading } = useSWR('/api/users', api.getUsers);
-  const { data: features = [] } = useSWR('/api/users/_features', api.getFeatures);
+  const { data: users = [], error: usersErr, isLoading } = useSWR(SWR_KEYS.users, api.getUsers);
+  const { data: features = [] } = useSWR(SWR_KEYS.features, api.getFeatures);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [showAdd, setShowAdd] = useState(false);
   const [editUser, setEditUser] = useState<User | null>(null);
   const [saving, setSaving] = useState<string | null>(null);
+  const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
-  if (isLoading) return <Loading />;
-  if (usersErr) return <Err msg={usersErr.message} />;
-
-  async function handleRoleChange(userId: string, role: UserRole) {
+  const handleRoleChange = useCallback(async (userId: string, role: UserRole) => {
     setSaving(userId + '_role');
+    setActionError(null);
     try {
       await api.updateUser(userId, { role });
-      mutate('/api/users');
+      mutate(SWR_KEYS.users);
+    } catch (e: unknown) {
+      setActionError(e instanceof Error ? e.message : String(e));
     } finally {
       setSaving(null);
     }
-  }
+  }, []);
 
-  async function handleFeatureToggle(userId: string, featureId: string, enabled: boolean) {
+  const handleFeatureToggle = useCallback(async (userId: string, featureId: string, enabled: boolean) => {
     setSaving(userId + '_' + featureId);
+    setActionError(null);
     try {
       await api.setFeature(userId, featureId, enabled);
-      mutate('/api/users');
+      mutate(SWR_KEYS.users);
+    } catch (e: unknown) {
+      setActionError(e instanceof Error ? e.message : String(e));
     } finally {
       setSaving(null);
     }
-  }
+  }, []);
 
-  async function handleDelete(userId: string) {
-    if (!confirm(`确定删除用户 ${userId}？`)) return;
-    await api.deleteUser(userId);
-    mutate('/api/users');
-  }
+  const handleDelete = useCallback(async (userId: string) => {
+    setSaving(userId + '_delete');
+    setActionError(null);
+    try {
+      await api.deleteUser(userId);
+      setConfirmingDelete(null);
+      mutate(SWR_KEYS.users);
+    } catch (e: unknown) {
+      setActionError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(null);
+    }
+  }, []);
+
+  const closeAddModal = useCallback(() => setShowAdd(false), []);
+  const savedAddModal = useCallback(() => { setShowAdd(false); mutate(SWR_KEYS.users); }, []);
+  const closeEditModal = useCallback(() => setEditUser(null), []);
+  const savedEditModal = useCallback(() => { setEditUser(null); mutate(SWR_KEYS.users); }, []);
+
+  if (isLoading) return <LoadingState />;
+  if (usersErr) return <ErrorState message={usersErr.message} retryKey={SWR_KEYS.users} />;
 
   return (
     <div>
@@ -70,16 +92,23 @@ export default function UsersPage() {
 
       {showAdd && (
         <AddUserModal
-          onClose={() => setShowAdd(false)}
-          onSaved={() => { setShowAdd(false); mutate('/api/users'); }}
+          onClose={closeAddModal}
+          onSaved={savedAddModal}
         />
+      )}
+
+      {actionError && (
+        <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700 flex items-center justify-between">
+          <span>{actionError}</span>
+          <button onClick={() => setActionError(null)} className="text-red-400 hover:text-red-600 ml-4">✕</button>
+        </div>
       )}
 
       {editUser && (
         <EditUserModal
           user={editUser}
-          onClose={() => setEditUser(null)}
-          onSaved={() => { setEditUser(null); mutate('/api/users'); }}
+          onClose={closeEditModal}
+          onSaved={savedEditModal}
         />
       )}
 
@@ -98,11 +127,15 @@ export default function UsersPage() {
             features={features}
             expanded={expandedId === user.userId}
             saving={saving}
+            confirmingDelete={confirmingDelete === user.userId}
             onExpand={() => setExpandedId(expandedId === user.userId ? null : user.userId)}
             onRoleChange={handleRoleChange}
             onFeatureToggle={handleFeatureToggle}
             onEdit={() => setEditUser(user)}
             onDelete={handleDelete}
+            onConfirmDelete={(id) => setConfirmingDelete(id)}
+            onCancelDelete={() => setConfirmingDelete(null)}
+            onActionError={setActionError}
           />
         ))}
       </div>
@@ -113,17 +146,21 @@ export default function UsersPage() {
 // ── UserRow ──────────────────────────────────────────────────────────────────
 
 function UserRow({
-  user, features, expanded, saving, onExpand, onRoleChange, onFeatureToggle, onEdit, onDelete,
+  user, features, expanded, saving, confirmingDelete, onExpand, onRoleChange, onFeatureToggle, onEdit, onDelete, onConfirmDelete, onCancelDelete, onActionError,
 }: {
   user: User;
   features: Feature[];
   expanded: boolean;
   saving: string | null;
+  confirmingDelete: boolean;
   onExpand: () => void;
   onRoleChange: (id: string, role: UserRole) => void;
   onFeatureToggle: (id: string, fid: string, enabled: boolean) => void;
   onEdit: () => void;
   onDelete: (id: string) => void;
+  onConfirmDelete: (id: string) => void;
+  onCancelDelete: () => void;
+  onActionError: (msg: string | null) => void;
 }) {
   const resolved = user.resolvedFeatures ?? {};
   const overrides = user.configs?.features ?? {};
@@ -176,6 +213,7 @@ function UserRow({
             value={user.role}
             onChange={e => onRoleChange(user.userId, e.target.value as UserRole)}
             disabled={saving === user.userId + '_role'}
+            aria-label={`${user.name ?? user.userId} 的角色`}
             className="text-xs border border-gray-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
           >
             <option value="user">普通用户</option>
@@ -197,12 +235,19 @@ function UserRow({
             {expanded ? '收起 ▲' : '权限 ▼'}
           </button>
 
-          <button
-            onClick={() => onDelete(user.userId)}
-            className="text-xs text-red-400 hover:text-red-600 transition-colors"
-          >
-            删除
-          </button>
+          {confirmingDelete ? (
+            <span className="flex items-center gap-1">
+              <button onClick={() => onDelete(user.userId)} className="text-xs font-medium text-red-600 bg-red-50 px-2 py-0.5 rounded hover:bg-red-100">确认删除</button>
+              <button onClick={onCancelDelete} className="text-xs text-gray-400 hover:text-gray-600 px-1">取消</button>
+            </span>
+          ) : (
+            <button
+              onClick={() => onConfirmDelete(user.userId)}
+              className="text-xs text-red-400 hover:text-red-600 transition-colors"
+            >
+              删除
+            </button>
+          )}
         </div>
       </div>
 
@@ -277,20 +322,38 @@ function UserRow({
 
           {/* Reset overrides button */}
           {Object.keys(overrides).length > 0 && (
-            <button
-              onClick={async () => {
-                await api.updateUser(user.userId, { configs: { features: {} } });
-                mutate('/api/users');
-              }}
-              className="mt-3 text-xs text-orange-500 hover:text-orange-700"
-            >
-              ↩ 清除所有覆盖，恢复角色默认值
-            </button>
+            <ResetOverridesButton userId={user.userId} onActionError={onActionError} />
           )}
           </div>
         </div>
       )}
     </div>
+  );
+}
+
+function ResetOverridesButton({ userId, onActionError }: { userId: string; onActionError: (msg: string | null) => void }) {
+  const [resetting, setResetting] = useState(false);
+
+  async function handleReset() {
+    setResetting(true);
+    try {
+      await api.updateUser(userId, { configs: { features: {} } });
+      mutate(SWR_KEYS.users);
+    } catch (e: unknown) {
+      onActionError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setResetting(false);
+    }
+  }
+
+  return (
+    <button
+      onClick={handleReset}
+      disabled={resetting}
+      className="mt-3 text-xs text-orange-500 hover:text-orange-700 disabled:opacity-50"
+    >
+      {resetting ? '重置中...' : '↩ 清除所有覆盖，恢复角色默认值'}
+    </button>
   );
 }
 
@@ -307,6 +370,39 @@ function InfoRow({ icon, label, value, mono }: { icon: string; label: string; va
   );
 }
 
+// ── Focus trap hook ───────────────────────────────────────────────────────────
+
+function useFocusTrap(ref: RefObject<HTMLElement | null>, onClose: () => void) {
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+
+    el.focus();
+
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') { onClose(); return; }
+      if (e.key !== 'Tab') return;
+
+      const focusable = el!.querySelectorAll<HTMLElement>(
+        'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+      );
+      if (focusable.length === 0) return;
+
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+
+      if (e.shiftKey) {
+        if (document.activeElement === first) { e.preventDefault(); last.focus(); }
+      } else {
+        if (document.activeElement === last) { e.preventDefault(); first.focus(); }
+      }
+    }
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [ref, onClose]);
+}
+
 // ── EditUserModal ─────────────────────────────────────────────────────────────
 
 function EditUserModal({ user, onClose, onSaved }: { user: User; onClose: () => void; onSaved: () => void }) {
@@ -317,6 +413,14 @@ function EditUserModal({ user, onClose, onSaved }: { user: User; onClose: () => 
   });
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState('');
+  const dialogRef = useRef<HTMLDivElement>(null);
+
+  useFocusTrap(dialogRef, onClose);
+
+  useEffect(() => {
+    document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = ''; };
+  }, []);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -329,16 +433,16 @@ function EditUserModal({ user, onClose, onSaved }: { user: User; onClose: () => 
         phone: form.phone.trim() || null,
       });
       onSaved();
-    } catch (e: any) {
-      setErr(e.message);
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
     }
   }
 
   return (
-    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
-      <div className="bg-white rounded-xl shadow-xl p-6 w-full max-w-md mx-4">
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50" onClick={onClose} role="dialog" aria-modal="true">
+      <div ref={dialogRef} tabIndex={-1} className="bg-white rounded-xl shadow-xl p-6 w-full max-w-md mx-4" onClick={e => e.stopPropagation()}>
         <h3 className="text-lg font-bold text-gray-900 mb-1">编辑用户信息</h3>
         <p className="text-xs text-gray-400 font-mono mb-4 truncate">{user.userId}</p>
 
@@ -392,6 +496,14 @@ function AddUserModal({ onClose, onSaved }: { onClose: () => void; onSaved: () =
   const [form, setForm] = useState({ email: '', name: '', role: 'user' as UserRole });
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState('');
+  const dialogRef = useRef<HTMLDivElement>(null);
+
+  useFocusTrap(dialogRef, onClose);
+
+  useEffect(() => {
+    document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = ''; };
+  }, []);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -403,16 +515,16 @@ function AddUserModal({ onClose, onSaved }: { onClose: () => void; onSaved: () =
       // email is the canonical userId for admin-provisioned users
       await api.upsertUser({ userId: email, email, name: form.name || undefined, role: form.role });
       onSaved();
-    } catch (e: any) {
-      setErr(e.message);
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
     }
   }
 
   return (
-    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
-      <div className="bg-white rounded-xl shadow-xl p-6 w-full max-w-md mx-4">
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50" onClick={onClose} role="dialog" aria-modal="true">
+      <div ref={dialogRef} tabIndex={-1} className="bg-white rounded-xl shadow-xl p-6 w-full max-w-md mx-4" onClick={e => e.stopPropagation()}>
         <h3 className="text-lg font-bold text-gray-900 mb-4">添加用户</h3>
         <p className="text-sm text-gray-500 mb-4">
           按邮箱添加用户。用户首次发送飞书消息时系统会自动将其邮箱与飞书账号关联。
@@ -464,31 +576,18 @@ function AddUserModal({ onClose, onSaved }: { onClose: () => void; onSaved: () =
   );
 }
 
-function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactElement<{ id?: string }> }) {
+  const generatedId = useId();
+  const id = (children as React.ReactElement<{ id?: string }>).props.id || generatedId;
   return (
     <div>
-      <label className="block text-sm font-medium text-gray-700 mb-1">{label}</label>
+      <label htmlFor={id} className="block text-sm font-medium text-gray-700 mb-1">{label}</label>
       {hint && <p className="text-xs text-gray-400 mb-1">{hint}</p>}
-      {children}
+      {/* Clone child to inject the id for label association */}
+      {typeof children === 'object' && 'props' in children
+        ? { ...children, props: { ...children.props, id } }
+        : children}
     </div>
   );
 }
 
-function Loading() {
-  return <div className="text-center py-16 text-gray-400">加载中...</div>;
-}
-
-function Err({ msg }: { msg: string }) {
-  return (
-    <div className="text-center py-16">
-      <p className="text-red-500 font-medium">❌ 加载失败</p>
-      <p className="text-sm text-gray-500 mt-2 font-mono break-all max-w-lg mx-auto">{msg}</p>
-      <button
-        onClick={() => window.location.reload()}
-        className="mt-4 text-sm text-blue-500 hover:underline"
-      >
-        重试
-      </button>
-    </div>
-  );
-}

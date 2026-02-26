@@ -1,13 +1,14 @@
 'use client';
 
 import useSWR from 'swr';
-import { api, DashboardData, AuditLog } from '@/lib/api';
+import { api, SWR_KEYS, DashboardData, AuditLog } from '@/lib/api';
+import { LoadingState, ErrorState } from '@/components/StatusStates';
 
 export default function Dashboard() {
-  const { data, error, isLoading } = useSWR<DashboardData>('/dashboard', api.getDashboard);
+  const { data, error, isLoading } = useSWR<DashboardData>(SWR_KEYS.dashboard, api.getDashboard);
 
   if (isLoading) return <LoadingState />;
-  if (error) return <ErrorState message={error.message} />;
+  if (error) return <ErrorState message={error.message} retryKey={SWR_KEYS.dashboard} />;
 
   const stats = data?.stats || { totalTasks: 0, pendingTasks: 0, completedTasks: 0, adminCount: 0, totalUsers: 0 };
   const builtinEnabled = data?.builtinEnabled ?? false;
@@ -18,7 +19,7 @@ export default function Dashboard() {
       <h2 className="text-2xl font-bold mb-6">Dashboard</h2>
       
       {/* 统计卡片 */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
+      <div className={`grid grid-cols-1 gap-4 mb-8 ${builtinEnabled ? 'md:grid-cols-4' : 'md:grid-cols-2'}`}>
         <StatCard title="注册用户" value={stats.totalUsers} color="blue" />
         {builtinEnabled && <StatCard title="待办任务" value={stats.pendingTasks} color="yellow" />}
         {builtinEnabled && <StatCard title="已完成任务" value={stats.completedTasks} color="green" />}
@@ -27,24 +28,6 @@ export default function Dashboard() {
 
       {/* 最近活动 */}
       <RecentActivity logs={activity} />
-    </div>
-  );
-}
-
-function LoadingState() {
-  return (
-    <div className="text-center py-12">
-      <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500" />
-      <p className="mt-2 text-gray-500">加载中...</p>
-    </div>
-  );
-}
-
-function ErrorState({ message }: { message: string }) {
-  return (
-    <div className="text-center py-12 text-red-500">
-      <p>❌ 加载失败</p>
-      <p className="text-sm mt-2">{message}</p>
     </div>
   );
 }
@@ -90,13 +73,13 @@ function RecentActivity({ logs }: { logs: AuditLog[] }) {
           {logs.map((log) => (
             <div key={log.id} className="flex items-center justify-between py-2 border-b last:border-0">
               <div>
-                <span className="font-medium">{ACTION_LABELS[log.action] || log.action}</span>
+                <span className="font-medium">{ACTION_LABELS[log.action] || '未知操作'}</span>
                 {log.target_id && (
                   <span className="text-gray-500 ml-2">({log.target_id.slice(0, 8)}...)</span>
                 )}
               </div>
               <span className="text-sm text-gray-400">
-                {new Date(log.created_at).toLocaleString('zh-CN')}
+                {new Date(log.created_at).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}
               </span>
             </div>
           ))}

@@ -81,8 +81,6 @@ function formatForAgent(event, apiBaseUrl) {
     },
     content,
     timestamp: parseInt(message.create_time) || Date.now(),
-    // Include raw event for agents that need full access
-    _raw: event,
   };
 }
 
@@ -107,10 +105,12 @@ async function forwardToAgent(webhookUrl, message, options = {}) {
   
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeout);
-  
+  // Redact URL to avoid leaking embedded credentials in logs
+  const redactedUrl = new URL(webhookUrl).origin + new URL(webhookUrl).pathname;
+
   try {
-    logger.info('Forwarding to agent', { 
-      webhookUrl, 
+    logger.info('Forwarding to agent', {
+      webhookUrl: redactedUrl,
       messageId: message.message_id,
       chatId: message.chat_id,
     });
@@ -125,22 +125,22 @@ async function forwardToAgent(webhookUrl, message, options = {}) {
     clearTimeout(timeoutId);
     
     if (!response.ok) {
-      const error = await response.text();
-      throw new Error(`Agent returned ${response.status}: ${error}`);
+      const error = await response.text().catch(() => 'unknown');
+      throw new Error(`Agent returned ${response.status}: ${error.slice(0, 500)}`);
     }
     
     const result = await response.json();
-    logger.info('Agent responded', { webhookUrl, success: true });
+    logger.info('Agent responded', { webhookUrl: redactedUrl, success: true });
     return result;
   } catch (err) {
     clearTimeout(timeoutId);
     
     if (err.name === 'AbortError') {
-      logger.warn('Agent timeout', { webhookUrl, timeout });
+      logger.warn('Agent timeout', { webhookUrl: redactedUrl, timeout });
       throw new Error('Agent request timeout');
     }
     
-    logger.error('Forward to agent failed', { webhookUrl, error: err.message });
+    logger.error('Forward to agent failed', { webhookUrl: redactedUrl, error: err.message });
     throw err;
   }
 }
@@ -212,6 +212,9 @@ async function forwardToOwnerAgent(event, apiBaseUrl, userContext = null) {
     };
   }
   
+  // Redact URL to avoid leaking embedded credentials in logs
+  const redactedUrl = new URL(config.webhookUrl).origin + new URL(config.webhookUrl).pathname;
+
   try {
     const result = await forwardToAgent(config.webhookUrl, message, {
       apiKey: config.apiKey,
@@ -219,9 +222,9 @@ async function forwardToOwnerAgent(event, apiBaseUrl, userContext = null) {
     });
     return result;
   } catch (err) {
-    logger.error('Failed to forward to owner agent', { 
+    logger.error('Failed to forward to owner agent', {
       error: err.message,
-      webhookUrl: config.webhookUrl,
+      webhookUrl: redactedUrl,
     });
     throw err;
   }

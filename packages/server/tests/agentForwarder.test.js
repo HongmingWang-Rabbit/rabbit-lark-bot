@@ -64,7 +64,6 @@ describe('Agent Forwarder Service', () => {
       expect(result.content.text).toBe('Hello');
 
       expect(result.timestamp).toBe(1234567890);
-      expect(result._raw).toEqual(event);
     });
 
     it('should handle non-JSON content gracefully', () => {
@@ -179,6 +178,54 @@ describe('Agent Forwarder Service', () => {
     it('should return true when configured', () => {
       process.env.AGENT_WEBHOOK_URL = 'http://agent.com/webhook';
       expect(agentForwarder.isAgentConfigured()).toBe(true);
+    });
+  });
+
+  describe('forwardToAgent', () => {
+    const originalFetch = global.fetch;
+
+    afterEach(() => {
+      global.fetch = originalFetch;
+    });
+
+    it('should POST message to webhook URL and return response', async () => {
+      const mockResponse = { ok: true, json: () => Promise.resolve({ status: 'received' }), text: () => Promise.resolve('') };
+      global.fetch = jest.fn().mockResolvedValue(mockResponse);
+
+      const message = { message_id: 'om_1', content: { text: 'hi' } };
+      const result = await agentForwarder.forwardToAgent('http://agent.test/hook', message, { apiKey: 'key' });
+
+      expect(result).toEqual({ status: 'received' });
+      expect(global.fetch).toHaveBeenCalledWith(
+        'http://agent.test/hook',
+        expect.objectContaining({ method: 'POST' })
+      );
+    });
+
+    it('should throw on non-OK response', async () => {
+      global.fetch = jest.fn().mockResolvedValue({
+        ok: false,
+        status: 500,
+        text: () => Promise.resolve('Internal Server Error'),
+      });
+
+      const message = { message_id: 'om_1' };
+      await expect(
+        agentForwarder.forwardToAgent('http://agent.test/hook', message)
+      ).rejects.toThrow('Agent returned 500');
+    });
+
+    it('should throw on timeout (abort)', async () => {
+      global.fetch = jest.fn().mockImplementation(() => {
+        const err = new Error('aborted');
+        err.name = 'AbortError';
+        return Promise.reject(err);
+      });
+
+      const message = { message_id: 'om_1' };
+      await expect(
+        agentForwarder.forwardToAgent('http://agent.test/hook', message, { timeout: 1 })
+      ).rejects.toThrow('Agent request timeout');
     });
   });
 

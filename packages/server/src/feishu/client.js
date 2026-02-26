@@ -1,11 +1,10 @@
 const logger = require('../utils/logger');
 
-const APP_ID = process.env.FEISHU_APP_ID;
-const APP_SECRET = process.env.FEISHU_APP_SECRET;
 const BASE_URL = 'https://open.feishu.cn/open-apis';
 const REQUEST_TIMEOUT_MS = 10000; // 10秒超时
 
 let tokenCache = { token: null, expiresAt: 0 };
+let tokenPromise = null; // coalesce concurrent token refreshes
 
 /**
  * 带超时的 fetch
@@ -37,34 +36,49 @@ async function getToken() {
     return tokenCache.token;
   }
 
-  try {
-    const resp = await fetchWithTimeout(`${BASE_URL}/auth/v3/tenant_access_token/internal`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ app_id: APP_ID, app_secret: APP_SECRET }),
-    });
+  // Coalesce concurrent requests: if a refresh is already in-flight, reuse it
+  if (tokenPromise) return tokenPromise;
 
-    if (!resp.ok) {
-      throw new Error(`Token request failed: ${resp.status} ${resp.statusText}`);
+  tokenPromise = (async () => {
+    try {
+      const appId = process.env.FEISHU_APP_ID;
+      const appSecret = process.env.FEISHU_APP_SECRET;
+      if (!appId || !appSecret) {
+        throw new Error('FEISHU_APP_ID and FEISHU_APP_SECRET must be set');
+      }
+
+      const resp = await fetchWithTimeout(`${BASE_URL}/auth/v3/tenant_access_token/internal`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ app_id: appId, app_secret: appSecret }),
+      });
+
+      if (!resp.ok) {
+        throw new Error(`Token request failed: ${resp.status} ${resp.statusText}`);
+      }
+
+      const data = await resp.json();
+
+      if (!data.tenant_access_token) {
+        throw new Error(`Invalid token response: code=${data.code}, msg=${data.msg || 'unknown'}`);
+      }
+
+      tokenCache = {
+        token: data.tenant_access_token,
+        expiresAt: Date.now() + Math.max(data.expire - 60, 300) * 1000,
+      };
+
+      logger.debug('Feishu token refreshed', { expiresIn: data.expire });
+      return tokenCache.token;
+    } catch (err) {
+      logger.error('Failed to get Feishu token', { error: err.message });
+      throw err;
+    } finally {
+      tokenPromise = null;
     }
+  })();
 
-    const data = await resp.json();
-
-    if (!data.tenant_access_token) {
-      throw new Error(`Invalid token response: ${JSON.stringify(data)}`);
-    }
-
-    tokenCache = {
-      token: data.tenant_access_token,
-      expiresAt: Date.now() + (data.expire - 60) * 1000, // 提前 60s 过期
-    };
-
-    logger.debug('Feishu token refreshed', { expiresIn: data.expire });
-    return tokenCache.token;
-  } catch (err) {
-    logger.error('Failed to get Feishu token', { error: err.message });
-    throw err;
-  }
+  return tokenPromise;
 }
 
 /**
@@ -73,7 +87,7 @@ async function getToken() {
  * @param {RequestInit} options - fetch 选项
  * @returns {Promise<any>}
  */
-async function request(path, options = {}) {
+async function request(path, options = {}, _retried = false) {
   const token = await getToken();
 
   try {
@@ -85,6 +99,13 @@ async function request(path, options = {}) {
         ...options.headers,
       },
     });
+
+    // Retry once on 401 — cached token may have expired between read and use
+    if (resp.status === 401 && !_retried) {
+      logger.warn('Feishu 401 — invalidating token cache and retrying', { path });
+      tokenCache = { token: null, expiresAt: 0 };
+      return request(path, options, true);
+    }
 
     const data = await resp.json();
 
@@ -113,26 +134,25 @@ async function request(path, options = {}) {
  * @param {string} receiveIdType - ID 类型 (user_id | open_id | chat_id)
  * @returns {Promise<Object>} 飞书 API 响应
  */
+const VALID_RECEIVE_ID_TYPES = ['user_id', 'open_id', 'chat_id', 'union_id', 'email'];
+
 async function sendMessage(receiveId, text, receiveIdType = 'user_id', replyToMessageId = null) {
+  if (!VALID_RECEIVE_ID_TYPES.includes(receiveIdType)) {
+    throw new Error(`Invalid receiveIdType: ${receiveIdType}`);
+  }
   const body = {
     receive_id: receiveId,
     msg_type: 'text',
     content: JSON.stringify({ text }),
   };
 
-  // Thread reply: include reply_in_thread if replying to a specific message
-  if (replyToMessageId) {
-    body.reply_in_thread = true;
-  }
-
-  let url = `/im/v1/messages?receive_id_type=${receiveIdType}`;
+  let url = `/im/v1/messages?${new URLSearchParams({ receive_id_type: receiveIdType })}`;
 
   // Use reply endpoint if replying to a specific message
   if (replyToMessageId) {
-    url = `/im/v1/messages/${replyToMessageId}/reply`;
+    url = `/im/v1/messages/${encodeURIComponent(replyToMessageId)}/reply`;
     // Reply API doesn't use receive_id or receive_id_type
     delete body.receive_id;
-    delete body.reply_in_thread;
   }
 
   const result = await request(url, {
@@ -157,6 +177,9 @@ async function sendMessage(receiveId, text, receiveIdType = 'user_id', replyToMe
  * @returns {Promise<string>} 消息 ID
  */
 async function sendMessageByType(receiveId, content, msgType = 'text', receiveIdType = 'user_id') {
+  if (!VALID_RECEIVE_ID_TYPES.includes(receiveIdType)) {
+    throw new Error(`Invalid receiveIdType: ${receiveIdType}`);
+  }
   let body;
   
   if (msgType === 'text') {
@@ -177,15 +200,15 @@ async function sendMessageByType(receiveId, content, msgType = 'text', receiveId
     throw new Error(`Unsupported message type: ${msgType}`);
   }
   
-  const result = await request(`/im/v1/messages?receive_id_type=${receiveIdType}`, {
+  const result = await request(`/im/v1/messages?${new URLSearchParams({ receive_id_type: receiveIdType })}`, {
     method: 'POST',
     body: JSON.stringify(body),
   });
-  
+
   if (result.code && result.code !== 0) {
     throw new Error(`Feishu API error: ${result.code} - ${result.msg}`);
   }
-  
+
   return result.data?.message_id;
 }
 
@@ -196,7 +219,10 @@ async function sendMessageByType(receiveId, content, msgType = 'text', receiveId
  * @param {string} receiveIdType - ID 类型
  */
 async function sendCardMessage(receiveId, card, receiveIdType = 'user_id') {
-  return request(`/im/v1/messages?receive_id_type=${receiveIdType}`, {
+  if (!VALID_RECEIVE_ID_TYPES.includes(receiveIdType)) {
+    throw new Error(`Invalid receiveIdType: ${receiveIdType}`);
+  }
+  const result = await request(`/im/v1/messages?${new URLSearchParams({ receive_id_type: receiveIdType })}`, {
     method: 'POST',
     body: JSON.stringify({
       receive_id: receiveId,
@@ -204,6 +230,12 @@ async function sendCardMessage(receiveId, card, receiveIdType = 'user_id') {
       content: JSON.stringify(card),
     }),
   });
+
+  if (result.code && result.code !== 0) {
+    throw new Error(`Feishu API error: ${result.code} - ${result.msg}`);
+  }
+
+  return result;
 }
 
 // ============ 用户相关 ============
@@ -225,7 +257,7 @@ async function getUserByEmail(email) {
  * @param {string} userId
  */
 async function getUserInfo(userId) {
-  return request(`/contact/v3/users/${userId}`);
+  return request(`/contact/v3/users/${encodeURIComponent(userId)}`);
 }
 
 /**
@@ -268,7 +300,7 @@ async function resolveUserInfo(userId, userIdType = 'user_id') {
  * @param {string} text - 回复内容
  */
 async function replyMessage(messageId, text) {
-  const result = await request(`/im/v1/messages/${messageId}/reply`, {
+  const result = await request(`/im/v1/messages/${encodeURIComponent(messageId)}/reply`, {
     method: 'POST',
     body: JSON.stringify({
       msg_type: 'text',
@@ -284,7 +316,7 @@ async function replyMessage(messageId, text) {
  * @param {string} emojiType - 表情类型
  */
 async function addReaction(messageId, emojiType) {
-  return request(`/im/v1/messages/${messageId}/reactions`, {
+  return request(`/im/v1/messages/${encodeURIComponent(messageId)}/reactions`, {
     method: 'POST',
     body: JSON.stringify({
       reaction_type: { emoji_type: emojiType },
@@ -320,14 +352,14 @@ const bitable = {
     if (options.pageSize) params.set('page_size', String(options.pageSize));
     if (options.pageToken) params.set('page_token', options.pageToken);
 
-    return request(`/bitable/v1/apps/${appToken}/tables/${tableId}/records?${params}`);
+    return request(`/bitable/v1/apps/${encodeURIComponent(appToken)}/tables/${encodeURIComponent(tableId)}/records?${params}`);
   },
 
   /**
    * 搜索记录
    */
   async searchRecords(appToken, tableId, filter) {
-    return request(`/bitable/v1/apps/${appToken}/tables/${tableId}/records/search`, {
+    return request(`/bitable/v1/apps/${encodeURIComponent(appToken)}/tables/${encodeURIComponent(tableId)}/records/search`, {
       method: 'POST',
       body: JSON.stringify({ filter }),
     });
@@ -337,7 +369,7 @@ const bitable = {
    * 创建记录
    */
   async createRecord(appToken, tableId, fields) {
-    return request(`/bitable/v1/apps/${appToken}/tables/${tableId}/records`, {
+    return request(`/bitable/v1/apps/${encodeURIComponent(appToken)}/tables/${encodeURIComponent(tableId)}/records`, {
       method: 'POST',
       body: JSON.stringify({ fields }),
     });
@@ -347,7 +379,7 @@ const bitable = {
    * 更新记录
    */
   async updateRecord(appToken, tableId, recordId, fields) {
-    return request(`/bitable/v1/apps/${appToken}/tables/${tableId}/records/${recordId}`, {
+    return request(`/bitable/v1/apps/${encodeURIComponent(appToken)}/tables/${encodeURIComponent(tableId)}/records/${encodeURIComponent(recordId)}`, {
       method: 'PUT',
       body: JSON.stringify({ fields }),
     });
@@ -357,7 +389,7 @@ const bitable = {
    * 删除记录
    */
   async deleteRecord(appToken, tableId, recordId) {
-    return request(`/bitable/v1/apps/${appToken}/tables/${tableId}/records/${recordId}`, {
+    return request(`/bitable/v1/apps/${encodeURIComponent(appToken)}/tables/${encodeURIComponent(tableId)}/records/${encodeURIComponent(recordId)}`, {
       method: 'DELETE',
     });
   },

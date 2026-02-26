@@ -3,13 +3,12 @@ const express = require('express');
 const router = express.Router();
 const feishu = require('../feishu/client');
 const usersDb = require('../db/users');
-const sessions = require('../db/sessions');
 const { resolveFeatures } = require('../features');
 const { detectIntent } = require('../utils/intentDetector');
 const { buildMenu } = require('../utils/menuBuilder');
-const reminderService = require('../services/reminder');
 const logger = require('../utils/logger');
 const agentForwarder = require('../services/agentForwarder');
+const { handleCuibanCommand, handleSessionSelect } = require('../services/cuibanHandler');
 
 /**
  * Decrypt Feishu AES-256-CBC encrypted payload.
@@ -26,44 +25,32 @@ function decryptFeishuPayload(encryptStr, encryptKey) {
   return JSON.parse(decrypted);
 }
 
-// ============ 用户会话管理（DB 持久化，重启后恢复）============
-
-/**
- * 设置用户会话（写入 PostgreSQL，自动过期）
- */
-async function setSession(key, data) {
-  await sessions.set(key, data);
-}
-
-/**
- * 获取用户会话（从 PostgreSQL 读取，已过期返回 null）
- */
-async function getSession(key) {
-  return sessions.get(key);
-}
-
-/**
- * 删除用户会话
- */
-async function deleteSession(key) {
-  await sessions.del(key);
-}
-
-// ============ 事件去重 ============
+// ============ 事件去重（单实例） ============
+// 注意：Map 存储在进程内存中，多实例部署时无法跨实例去重。
+// 多实例环境请改用 Redis 或 PostgreSQL INSERT ON CONFLICT。
 
 const processedEventIds = new Map(); // eventId -> timestamp
 const EVENT_DEDUP_TTL_MS = 5 * 60 * 1000; // 5 min
+const EVENT_DEDUP_MAX_SIZE = 5000;
+
+function dedupCleanup() {
+  const cutoff = Date.now() - EVENT_DEDUP_TTL_MS;
+  for (const [id, ts] of processedEventIds) {
+    if (ts < cutoff) processedEventIds.delete(id);
+  }
+}
+
+// Periodic cleanup so stale entries expire even when no events arrive
+const _dedupCleanupInterval = setInterval(dedupCleanup, 60_000);
+_dedupCleanupInterval.unref(); // don't keep process alive just for cleanup
 
 function isDuplicateEvent(eventId) {
   if (!eventId) return false;
   if (processedEventIds.has(eventId)) return true;
   processedEventIds.set(eventId, Date.now());
-  // Clean up old entries
-  if (processedEventIds.size > 1000) {
-    const cutoff = Date.now() - EVENT_DEDUP_TTL_MS;
-    for (const [id, ts] of processedEventIds) {
-      if (ts < cutoff) processedEventIds.delete(id);
-    }
+  // Also prune inline when map grows too large
+  if (processedEventIds.size > EVENT_DEDUP_MAX_SIZE) {
+    dedupCleanup();
   }
   return false;
 }
@@ -131,7 +118,7 @@ router.post('/event', async (req, res) => {
     if (openId || senderId) {
       try {
         const existing = await usersDb.findByOpenId(openId);
-        logger.info('👤 User lookup', {
+        logger.debug('👤 User lookup', {
           openId,
           found: !!existing,
           existingName: existing?.name || null,
@@ -159,13 +146,11 @@ router.post('/event', async (req, res) => {
             logger.warn('resolveUserInfo failed', { error: err.message });
             return null;
           });
-          logger.info('🔍 resolveUserInfo result', {
+          logger.debug('🔍 resolveUserInfo result', {
             success:      !!userInfo,
             name:         userInfo?.name        || null,
             email:        userInfo?.email       || null,
-            phone:        userInfo?.mobile      || null,
-            feishuUserId: userInfo?.feishuUserId || null,  // user_id || union_id
-            unionId:      userInfo?.unionId      || null,
+            feishuUserId: userInfo?.feishuUserId || null,
             reason: userInfo ? 'ok' : 'null (no contact permission or API error)',
           });
         } else {
@@ -188,11 +173,9 @@ router.post('/event', async (req, res) => {
           feishuUserId: resolvedFeishuUserId,
         });
 
-        logger.info('✅ User provisioned', {
+        logger.debug('✅ User provisioned', {
           userId:        user?.user_id,
           name:          user?.name   || '(none)',
-          email:         user?.email  || '(none)',
-          phone:         user?.phone  || '(none)',
           role:          user?.role,
           feishuUserId:  user?.feishu_user_id || '(none)',
           openId:        user?.open_id || '(none)',
@@ -207,7 +190,9 @@ router.post('/event', async (req, res) => {
     try {
       const rawContent = JSON.parse(event.message?.content || '{}');
       messageText = rawContent.text || '';
-    } catch (_) {}
+    } catch (parseErr) {
+      logger.debug('Failed to parse message content', { error: parseErr.message });
+    }
 
     // ── [2] 意图检测 ──────────────────────────────────────────────────────
     const intent = detectIntent(messageText);
@@ -243,27 +228,13 @@ router.post('/event', async (req, res) => {
 
     // ── [4] 会话上下文（数字选择） ────────────────────────────────────────
     const sessionKey = openId || senderId;
-    const activeSession = await getSession(sessionKey);
-    if (activeSession) {
-      logger.info('💬 Active session found', { step: activeSession.step, taskCount: activeSession.tasks?.length });
-    }
-    if (activeSession?.step === 'complete_select' && /^\d+$/.test(messageText.trim())) {
-      const idx = parseInt(messageText.trim(), 10) - 1;
-      logger.info('✔️  Session: completing task by number', { idx: idx + 1 });
-      if (idx >= 0 && idx < activeSession.tasks.length) {
-        const task = activeSession.tasks[idx];
-        await deleteSession(sessionKey);
-        await completeTaskAndReply(task, activeSession.proof || '', user, user?.feishu_user_id || senderId, chatId, messageId).catch((err) => {
-          logger.error('Complete task error', { error: err.message });
-          feishu.sendMessage(chatId, '⚠️ 完成任务失败，请稍后重试。', 'chat_id').catch(() => {});
-        });
-        return res.json({ success: true });
-      } else {
-        const count = activeSession.tasks.length;
-        await feishu.sendMessage(chatId, `❌ 请输入 1-${count} 之间的数字`, 'chat_id').catch(() => {});
-        return res.json({ success: true });
-      }
-    }
+    const sessionHandled = await handleSessionSelect({
+      sessionKey, messageText, user, senderId, chatId, messageId,
+    }).catch((err) => {
+      logger.error('Session select error', { error: err.message });
+      return false;
+    });
+    if (sessionHandled) return res.json({ success: true });
 
     // ── [5] 催办直接命令 ──────────────────────────────────────────────────
     if (['cuiban_view', 'cuiban_complete', 'cuiban_create'].includes(intent)) {
@@ -303,251 +274,5 @@ router.post('/event', async (req, res) => {
 
   res.json({ success: true });
 });
-
-// ══════════════════════════════════════════════════════════════════════════════
-// 催办命令处理器
-// ══════════════════════════════════════════════════════════════════════════════
-
-/**
- * 向聊天发送回复（优先线程回复，否则发到 chat）
- */
-async function replyToChat(chatId, messageId, text) {
-  if (messageId) {
-    return feishu.sendMessage(chatId, text, 'chat_id', messageId).catch(() =>
-      feishu.sendMessage(chatId, text, 'chat_id')
-    );
-  }
-  return feishu.sendMessage(chatId, text, 'chat_id');
-}
-
-/**
- * 完成任务并通知用户
- */
-async function completeTaskAndReply(task, proof, user, senderId, chatId, messageId) {
-  const completerName = user?.name || user?.email || null;
-  const completed = await reminderService.completeTask(task.id, proof || '', senderId, completerName);
-  if (!completed) {
-    await replyToChat(chatId, messageId, `⚠️ 任务「${task.title}」不存在或已完成`);
-    return;
-  }
-  let reply = `✅ 已完成任务「${task.title}」！`;
-  if (proof) reply += `\n📎 证明：${proof}`;
-  await replyToChat(chatId, messageId, reply);
-}
-
-/**
- * 主催办命令处理函数
- * @param {object} params
- * @param {string} params.intent - 'cuiban_view' | 'cuiban_complete' | 'cuiban_create'
- * @param {string} params.text - 原始消息文本
- * @param {object} params.user - 用户记录（含 resolvedFeatures）
- * @param {string} params.senderId - 飞书 feishu_user_id（用于任务查询和审计，可能为 null）
- * @param {string} params.openId  - 飞书 open_id（ou_xxx），用于设置 reporterOpenId
- * @param {string} params.chatId - 聊天 ID
- * @param {string} params.messageId - 消息 ID（用于线程回复）
- * @param {string} params.sessionKey - 会话 key（openId || senderId）
- * @returns {Promise<boolean>} true if handled
- */
-async function handleCuibanCommand({ intent, text, user, senderId, openId, chatId, messageId, sessionKey }) {
-  const resolved = user?.resolvedFeatures || resolveFeatures(user || { role: 'user', configs: {} });
-
-  // 用于任务查询的 feishu_user_id：优先用 DB 里存的（autoProvision 可能从 contact API 补全过）
-  // Tasks are indexed by feishu_user_id (on_xxx), NOT user_id (which may be an email).
-  const effectiveSenderId = user?.feishu_user_id || senderId;
-
-  // ── 查看任务 ──────────────────────────────────────────────────────────────
-  if (intent === 'cuiban_view') {
-    if (!resolved.cuiban_view) {
-      await replyToChat(chatId, messageId, '🚫 你没有查看催办任务的权限，请联系管理员');
-      return true;
-    }
-
-    if (!effectiveSenderId) {
-      await replyToChat(chatId, messageId, '⚠️ 无法识别你的飞书用户 ID，请联系管理员');
-      return true;
-    }
-
-    const tasks = await reminderService.getUserPendingTasks(effectiveSenderId, openId);
-
-    if (!tasks.length) {
-      await replyToChat(chatId, messageId, '🎉 你目前没有待办的催办任务！');
-      return true;
-    }
-
-    let msg = `📋 你的待办任务（${tasks.length} 项）：\n\n`;
-    tasks.forEach((t, i) => {
-      const deadlineStr = t.deadline
-        ? new Date(t.deadline).toLocaleDateString('zh-CN', { month: 'long', day: 'numeric' })
-        : '无截止日期';
-      msg += `${i + 1}. ${t.title}\n   📅 ${deadlineStr}\n`;
-    });
-    msg += '\n发送「完成 N」标记对应任务完成';
-    await replyToChat(chatId, messageId, msg);
-    return true;
-  }
-
-  // ── 完成任务 ──────────────────────────────────────────────────────────────
-  if (intent === 'cuiban_complete') {
-    if (!resolved.cuiban_complete) {
-      await replyToChat(chatId, messageId, '🚫 你没有完成任务的权限，请联系管理员');
-      return true;
-    }
-
-    // 解析参数：可能包含任务名/序号 + 证明链接
-    const match = text.trim().match(/^(?:完成|done|\/done|\/complete)\s*([\s\S]*)?$/i);
-    const arg = (match?.[1] || '').trim();
-
-    // 提取证明链接（URL）
-    const urlMatch = arg.match(/(https?:\/\/[^\s]+)/);
-    const proof = urlMatch?.[1] || '';
-    const cleanArg = arg.replace(/(https?:\/\/[^\s]+)/g, '').trim();
-
-    if (!effectiveSenderId) {
-      await replyToChat(chatId, messageId, '⚠️ 无法识别你的飞书用户 ID，请联系管理员');
-      return true;
-    }
-
-    const tasks = await reminderService.getUserPendingTasks(effectiveSenderId, openId);
-
-    if (!tasks.length) {
-      await replyToChat(chatId, messageId, '✅ 你目前没有待办任务');
-      return true;
-    }
-
-    let targetTask = null;
-
-    // 尝试数字序号选择
-    if (/^\d+$/.test(cleanArg)) {
-      const idx = parseInt(cleanArg, 10) - 1;
-      if (idx >= 0 && idx < tasks.length) targetTask = tasks[idx];
-    }
-
-    // 尝试任务名模糊匹配
-    if (!targetTask && cleanArg) {
-      targetTask = tasks.find((t) => t.title.includes(cleanArg) || cleanArg.includes(t.title));
-    }
-
-    // 只有一个任务 → 直接完成
-    if (!targetTask && tasks.length === 1) {
-      targetTask = tasks[0];
-    }
-
-    if (targetTask) {
-      await completeTaskAndReply(targetTask, proof, user, effectiveSenderId, chatId, messageId);
-      return true;
-    }
-
-    // 多个任务，让用户选择
-    let msg = `你有 ${tasks.length} 个待办任务，请回复编号选择：\n\n`;
-    tasks.forEach((t, i) => {
-      msg += `${i + 1}. ${t.title}\n`;
-    });
-    msg += '\n（回复数字选择，如「1」）';
-
-    await setSession(sessionKey, { tasks, proof, step: 'complete_select', chatId, messageId });
-    await replyToChat(chatId, messageId, msg);
-    return true;
-  }
-
-  // ── 创建任务 ──────────────────────────────────────────────────────────────
-  if (intent === 'cuiban_create') {
-    if (!resolved.cuiban_create) {
-      await replyToChat(chatId, messageId, '🚫 你没有创建催办任务的权限，请联系管理员');
-      return true;
-    }
-
-    // 解析格式：/add 任务名称 用户邮箱/ID [截止日期YYYY-MM-DD]
-    const addMatch = text.trim().match(/^\/add\s+(.+)$/i);
-    if (!addMatch) {
-      await replyToChat(
-        chatId,
-        messageId,
-        '📝 创建任务格式：\n/add 任务名称 用户邮箱 [截止日期]\n\n示例：\n/add 提交周报 zhangsan@company.com 2026-03-01'
-      );
-      return true;
-    }
-
-    const parts = addMatch[1].trim().split(/\s+/);
-    if (parts.length < 2) {
-      await replyToChat(
-        chatId,
-        messageId,
-        '📝 格式：/add 任务名称 用户邮箱 [截止日期]\n示例：/add 提交周报 zhangsan@company.com 2026-03-01'
-      );
-      return true;
-    }
-
-    // 解析：最后一个 YYYY-MM-DD 格式的 part 是截止日期
-    const datePattern = /^\d{4}-\d{2}-\d{2}$/;
-    let taskName, target, deadline;
-
-    if (parts.length >= 3 && datePattern.test(parts[parts.length - 1])) {
-      deadline = parts[parts.length - 1];
-      target = parts[parts.length - 2];
-      taskName = parts.slice(0, parts.length - 2).join(' ');
-    } else {
-      target = parts[parts.length - 1];
-      taskName = parts.slice(0, parts.length - 1).join(' ');
-    }
-
-    if (!taskName) {
-      await replyToChat(chatId, messageId, '❌ 任务名称不能为空');
-      return true;
-    }
-
-    // 查找目标用户（邮箱 → feishu_user_id → 姓名模糊匹配）
-    let targetUser = null;
-    if (target.includes('@')) {
-      targetUser = await usersDb.findByEmail(target);
-    }
-    if (!targetUser) {
-      targetUser = await usersDb.findByFeishuUserId(target);
-    }
-    if (!targetUser) {
-      // 姓名模糊搜索（最后手段）
-      const nameMatches = await usersDb.searchByName(target);
-      if (nameMatches.length === 1) {
-        targetUser = nameMatches[0];
-      } else if (nameMatches.length > 1) {
-        const list = nameMatches.map((u) => `• ${u.name}（${u.email || '无邮箱'}）`).join('\n');
-        await replyToChat(chatId, messageId,
-          `⚠️ 找到多个名字相似的用户，请用邮箱指定：\n\n${list}`
-        );
-        return true;
-      }
-    }
-
-    // Need at least one identifier (feishu_user_id preferred; open_id as fallback)
-    if (!targetUser || (!targetUser.feishu_user_id && !targetUser.open_id)) {
-      await replyToChat(
-        chatId,
-        messageId,
-        `❌ 找不到用户「${target}」\n支持邮箱、姓名搜索。请先让对方发送一条飞书消息完成注册。`
-      );
-      return true;
-    }
-
-    await reminderService.createTask({
-      title: taskName,
-      assigneeId: targetUser.feishu_user_id || targetUser.open_id,  // open_id as fallback
-      assigneeOpenId: targetUser.open_id || null,
-      assigneeName: targetUser.name || null,
-      deadline,
-      creatorId: senderId,
-      reporterOpenId: openId || null,
-    });
-
-    const deadlineStr = deadline || `默认 ${reminderService.DEFAULT_DEADLINE_DAYS} 天`;
-    const targetLabel = targetUser.name || targetUser.email || target;
-    await replyToChat(
-      chatId,
-      messageId,
-      `✅ 任务已创建！\n📋 ${taskName}\n👤 → ${targetLabel}\n📅 截止：${deadlineStr}`
-    );
-    return true;
-  }
-
-  return false;
-}
 
 module.exports = router;

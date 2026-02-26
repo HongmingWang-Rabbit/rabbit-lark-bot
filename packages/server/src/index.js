@@ -6,7 +6,7 @@ const { pool } = require('./db');
 const logger = require('./utils/logger');
 const { validateEnv } = require('./utils/validateEnv');
 const { apiAuth, feishuWebhookAuth } = require('./middleware/auth');
-const { rateLimits } = require('./middleware/rateLimit');
+const { rateLimits, limiter } = require('./middleware/rateLimit');
 const webhookRoutes = require('./routes/webhook');
 const apiRoutes = require('./routes/api');
 const agentRoutes = require('./routes/agent');
@@ -21,8 +21,14 @@ const app = express();
 const PORT = process.env.PORT || 3456;
 
 // Middleware
-app.use(cors());
-app.use(express.json());
+app.use(cors({
+  origin: process.env.CORS_ORIGIN || (process.env.NODE_ENV === 'production' ? false : '*'),
+}));
+app.use(express.json({
+  limit: '1mb',
+  // Preserve raw body for webhook signature verification
+  verify: (req, _res, buf) => { req.rawBody = buf; },
+}));
 app.use(logger.middleware);
 
 // Health check
@@ -41,9 +47,9 @@ app.get('/health', async (req, res) => {
 
 // Routes with middleware
 app.use('/webhook', rateLimits.webhook, feishuWebhookAuth, webhookRoutes);
+apiRoutes.use('/agent', agentRoutes);
+apiRoutes.use('/users', userRoutes);
 app.use('/api', rateLimits.api, apiAuth, apiRoutes);
-app.use('/api/agent', rateLimits.api, apiAuth, agentRoutes);
-app.use('/api/users', rateLimits.api, apiAuth, userRoutes);
 
 // 404 handler
 app.use((req, res) => {
@@ -53,24 +59,36 @@ app.use((req, res) => {
 // Error handler
 app.use((err, req, res, next) => {
   logger.error('Unhandled error', { error: err.message, stack: err.stack });
-  res.status(500).json({ error: err.message });
-});
-
-// Graceful shutdown
-process.on('SIGTERM', async () => {
-  logger.info('SIGTERM received, shutting down...');
-  await pool.end();
-  process.exit(0);
+  const message = process.env.NODE_ENV === 'production' ? 'Internal server error' : err.message;
+  res.status(500).json({ error: message });
 });
 
 // Start server
+let server;
+const intervalIds = [];
+
+// Graceful shutdown
+async function shutdown(signal) {
+  logger.info(`${signal} received, shutting down...`);
+  intervalIds.forEach(clearInterval);
+  limiter.destroy();
+  if (server) {
+    await new Promise((resolve) => server.close(resolve));
+  }
+  await pool.end();
+  logger.close();
+  process.exit(0);
+}
+process.on('SIGTERM', () => { shutdown('SIGTERM').catch(err => logger.error('Shutdown error', { error: err.message })); });
+process.on('SIGINT', () => { shutdown('SIGINT').catch(err => logger.error('Shutdown error', { error: err.message })); });
+
 async function start() {
   try {
     // Test DB connection
     await pool.query('SELECT NOW()');
     logger.info('Database connected');
-    
-    app.listen(PORT, () => {
+
+    server = app.listen(PORT, () => {
       logger.info(`🐰 Rabbit Lark Server started`, { port: PORT });
       logger.info(`Webhook: http://localhost:${PORT}/webhook/event`);
       logger.info(`API: http://localhost:${PORT}/api`);
@@ -88,13 +106,13 @@ async function start() {
     };
     // Run once immediately on startup (catches any reminders missed during downtime)
     runReminderCron();
-    setInterval(runReminderCron, REMINDER_CHECK_MINUTES * 60 * 1000);
+    intervalIds.push(setInterval(runReminderCron, REMINDER_CHECK_MINUTES * 60 * 1000));
     logger.info(`⏰ Reminder cron started`, { checkIntervalMinutes: REMINDER_CHECK_MINUTES });
 
     // Session cleanup: prune expired rows every 30 minutes
-    setInterval(() => sessions.cleanup().catch((err) => {
+    intervalIds.push(setInterval(() => sessions.cleanup().catch((err) => {
       logger.error('Session cleanup error', { error: err.message });
-    }), 30 * 60 * 1000);
+    }), 30 * 60 * 1000));
     // ─────────────────────────────────────────────────────────────────────────
 
   } catch (err) {

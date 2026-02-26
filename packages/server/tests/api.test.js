@@ -1,6 +1,11 @@
 const request = require('supertest');
 const express = require('express');
 
+// Mock database pool (used by dashboard COUNT queries)
+jest.mock('../src/db/pool', () => ({
+  query: jest.fn().mockResolvedValue({ rows: [{ total: 0, pending: 0, completed: 0, count: 0 }] }),
+}));
+
 // Mock database
 jest.mock('../src/db', () => ({
   pool: { query: jest.fn() },
@@ -128,6 +133,26 @@ describe('API Routes', () => {
 
       expect(res.status).toBe(200);
       expect(Array.isArray(res.body)).toBe(true);
+    });
+  });
+
+  describe('PUT /api/settings/:key', () => {
+    it('should reject unknown setting keys', async () => {
+      const res = await request(app)
+        .put('/api/settings/malicious_key')
+        .send({ value: 'bad' });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain('Unknown setting key');
+    });
+
+    it('should accept valid setting keys', async () => {
+      const res = await request(app)
+        .put('/api/settings/welcome_message')
+        .send({ value: 'Hello!' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
     });
   });
 

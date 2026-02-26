@@ -1,8 +1,13 @@
 const pool = require('./pool');
 
 // ============ Admin 操作 ============
+// NOTE: This admins table is the legacy admin list used by the apiAuth middleware.
+// The users table has its own role-based isAdmin check (db/users.js) used by the
+// feature/permission system. Both should agree — the admins table is for API access
+// control, while users.role governs in-chat feature permissions.
 const admins = {
   async isAdmin(userId, email) {
+    if (!userId && !email) return false;
     const result = await pool.query(
       'SELECT 1 FROM admins WHERE user_id = $1 OR email = $2 LIMIT 1',
       [userId, email]
@@ -19,6 +24,10 @@ const admins = {
   },
 
   async add({ userId, email, name, role = 'admin' }) {
+    const VALID_ADMIN_ROLES = ['admin', 'superadmin'];
+    if (!VALID_ADMIN_ROLES.includes(role)) {
+      throw new Error(`Invalid admin role: ${role}. Must be one of: ${VALID_ADMIN_ROLES.join(', ')}`);
+    }
     // 如果有 userId，用 userId 做 upsert；否则用 email
     if (userId) {
       const result = await pool.query(

@@ -10,12 +10,20 @@ X-API-Key: your_api_key
 Authorization: Bearer your_api_key
 ```
 
-未设置 `API_KEY` 环境变量时，API 处于未保护状态（仅用于开发）。
+认证行为按环境变化：
+- `NODE_ENV=development` 且未设置 `REQUIRE_AUTH`：跳过认证
+- `NODE_ENV=production` 且未设置 `API_KEY`：拒绝所有请求（500）
+- 其他环境（test、staging 等）未设置 `API_KEY`：拒绝所有请求（500）
+
+API Key 比较使用 SHA-256 哈希 + `crypto.timingSafeEqual`，防止长度和时序侧信道攻击。
 
 ## 限流
 
 - API：100 请求/分钟/IP
 - Webhook：200 请求/分钟/IP
+- 内存上限：10,000 条目（超出时自动淘汰最早条目）
+
+> 注意：限流计数器存储在进程内存中（固定窗口），多实例部署时每个实例独立计数。
 
 ---
 
@@ -38,6 +46,10 @@ Authorization: Bearer your_api_key
 ### POST /webhook/event
 
 飞书事件回调，由飞书服务器调用，无需手动调用。
+
+**认证方式：**
+- 加密载荷（`encrypt` 字段）：AES-256-CBC 解密即认证（仅在 `FEISHU_ENCRYPT_KEY` 已配置时生效）
+- 明文载荷：SHA-256 签名验证（`X-Lark-Signature` 头）
 
 **URL 验证：**
 ```json
@@ -121,11 +133,16 @@ Authorization: Bearer your_api_key
   "targetEmail": "user@company.com", // 备选：按邮箱查找执行人
   "reporterOpenId": "ou_yyy",        // 报告对象 open_id（可选）
   "deadline": "2026-03-31",          // YYYY-MM-DD（可选）
-  "note": "请在月底前完成",           // 可选
-  "reminderIntervalHours": 24,       // 提醒间隔小时（默认 24，0=关闭）
+  "note": "请在月底前完成",           // 可选，最多 1000 字
+  "reminderIntervalHours": 24,       // 提醒间隔小时（默认 24，0=关闭，负数自动归零）
   "creatorId": "on_xxx"             // 创建者 feishu_user_id（可选，用于审计）
 }
 ```
+
+**验证规则：**
+- `title` 必填，最多 200 字
+- `note` 最多 1000 字
+- `reminderIntervalHours` 自动取整并 clamp 到 ≥ 0
 
 **Response：**
 ```json
@@ -137,7 +154,9 @@ Authorization: Bearer your_api_key
 
 **错误：**
 - `400` — 标题或目标用户未提供
+- `400` — 标题超过 200 字 / 备注超过 1000 字
 - `400` — 找不到目标用户（未发过飞书消息）
+- `400` — Invalid task ID（非数字 ID）
 
 ### POST /api/tasks/:id/complete
 
@@ -160,16 +179,15 @@ Authorization: Bearer your_api_key
 ```
 
 **错误：**
+- `400` — Invalid task ID
 - `404` — 任务不存在或已完成
 
 ### DELETE /api/tasks/:id
 
 删除任务。
 
-**Request Body：**
-```json
-{ "userId": "on_xxx" }
-```
+**Query Params：**
+- `userId` — 操作人（可选，审计用）
 
 **Response：**
 ```json
@@ -177,6 +195,7 @@ Authorization: Bearer your_api_key
 ```
 
 **错误：**
+- `400` — Invalid task ID
 - `404` — 任务不存在
 
 ---
@@ -201,17 +220,22 @@ Authorization: Bearer your_api_key
       "userId": "ou_xxx",
       "openId": "ou_xxx",
       "feishuUserId": "on_xxx",
-      "name": "王泓铭",
+      "name": "张三",
       "email": null,
       "phone": null,
       "role": "user",
       "configs": { "features": {} },
+      "resolvedFeatures": { "cuiban_view": true, "cuiban_complete": true },
       "createdAt": "2026-02-26T05:40:00.000Z",
       "updatedAt": "2026-02-26T07:00:00.000Z"
     }
   ]
 }
 ```
+
+### GET /api/users/_features
+
+获取功能定义列表（用于管理面板功能开关 UI）。
 
 ### POST /api/users
 
@@ -238,18 +262,18 @@ Authorization: Bearer your_api_key
   "name": "张三",
   "email": "zhangsan@company.com",
   "phone": "138xxxxxxxx",
-  "role": "admin"
+  "role": "admin",
+  "configs": { "features": { "cuiban_create": true } }
 }
 ```
 
-### PATCH /api/users/:userId/features
+### PATCH /api/users/:userId/features/:featureId
 
-修改用户功能开关（覆盖角色默认值）。
+修改用户单个功能开关（覆盖角色默认值）。
 
 **Request Body：**
 ```json
 {
-  "feature": "cuiban_create",
   "enabled": true
 }
 ```
@@ -286,19 +310,30 @@ Authorization: Bearer your_api_key
 ```json
 [
   { "key": "default_deadline_days", "value": 3, "description": "默认截止天数" },
-  { "key": "timezone", "value": "Asia/Shanghai", "description": "时区" },
-  { "key": "features", "value": { "cuiban": { "enabled": true } }, "description": "功能开关" }
+  { "key": "timezone", "value": "Asia/Shanghai", "description": "时区" }
 ]
 ```
 
 ### PUT /api/settings/:key
 
+更新配置项。仅允许以下预定义的 key：
+
+- `enable_builtin_bot` — 启用/禁用内置催办功能
+- `default_deadline_days` — 默认截止天数
+- `default_reminder_interval_hours` — 默认提醒间隔
+- `welcome_message` — 欢迎消息
+- `max_tasks_per_user` — 每用户最大任务数
+
+**Request Body：**
 ```json
 {
   "value": 5,
   "description": "更新后的描述"
 }
 ```
+
+**错误：**
+- `400` — 未知的 setting key
 
 ---
 
@@ -307,7 +342,7 @@ Authorization: Bearer your_api_key
 ### GET /api/audit
 
 **Query Params：**
-- `limit` — 默认 50
+- `limit` — 默认 50，最大 500
 - `offset` — 默认 0
 - `userId` — 按用户过滤
 - `action` — 按操作类型过滤
@@ -353,6 +388,8 @@ AI Agent 回复用户。
 ```json
 { "error": "错误描述信息" }
 ```
+
+生产环境（`NODE_ENV=production`）中错误消息会被替换为通用描述，不暴露内部实现细节。
 
 | 状态码 | 含义 |
 |--------|------|

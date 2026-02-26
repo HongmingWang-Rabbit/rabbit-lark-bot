@@ -25,9 +25,12 @@ interface Props {
   required?: boolean;
 }
 
+type SelectableUser = User & { openId: string };
+
 export default function UserCombobox({ value, onChange, users, placeholder = '搜索用户…', required }: Props) {
   const [query, setQuery] = useState('');
   const [open, setOpen] = useState(false);
+  const [highlightIdx, setHighlightIdx] = useState(-1);
   const containerRef = useRef<HTMLDivElement>(null);
 
   // Derive display label for the current value
@@ -36,17 +39,23 @@ export default function UserCombobox({ value, onChange, users, placeholder = '�
     [users, value]
   );
 
+  // Only show users that have an openId (required for task assignment / messaging)
+  const selectableUsers = useMemo(
+    () => users.filter((u): u is SelectableUser => !!u.openId),
+    [users]
+  );
+
   // Filter users by name or email
   const filtered = useMemo(() => {
-    if (!query.trim()) return users.slice(0, 20);           // show first 20 when empty
+    if (!query.trim()) return selectableUsers.slice(0, 20);   // show first 20 when empty
     const q = query.toLowerCase();
-    return users
+    return selectableUsers
       .filter(u =>
         u.name?.toLowerCase().includes(q) ||
         u.email?.toLowerCase().includes(q)
       )
       .slice(0, 10);
-  }, [users, query]);
+  }, [selectableUsers, query]);
 
   // Close dropdown when clicking outside
   useEffect(() => {
@@ -59,10 +68,27 @@ export default function UserCombobox({ value, onChange, users, placeholder = '�
     return () => document.removeEventListener('mousedown', handleClick);
   }, []);
 
-  function handleSelect(user: User) {
+  function handleSelect(user: SelectableUser) {
     onChange(user.openId);
     setQuery('');
     setOpen(false);
+    setHighlightIdx(-1);
+  }
+
+  function handleKeyDown(e: React.KeyboardEvent) {
+    if (!open || filtered.length === 0) return;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setHighlightIdx(i => (i + 1) % filtered.length);
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setHighlightIdx(i => (i <= 0 ? filtered.length - 1 : i - 1));
+    } else if (e.key === 'Enter' && highlightIdx >= 0 && highlightIdx < filtered.length) {
+      e.preventDefault();
+      handleSelect(filtered[highlightIdx]);
+    } else if (e.key === 'Escape') {
+      setOpen(false);
+    }
   }
 
   function handleClear(e: React.MouseEvent) {
@@ -102,21 +128,28 @@ export default function UserCombobox({ value, onChange, users, placeholder = '�
         required={required && !value}
         placeholder={placeholder}
         value={query}
-        onChange={e => { setQuery(e.target.value); setOpen(true); }}
+        onChange={e => { setQuery(e.target.value); setOpen(true); setHighlightIdx(-1); }}
         onFocus={() => setOpen(true)}
+        onKeyDown={handleKeyDown}
+        role="combobox"
+        aria-expanded={open}
+        aria-autocomplete="list"
         className="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
       />
 
       {open && (
-        <ul className="absolute z-50 mt-1 w-full bg-white border rounded-lg shadow-lg max-h-60 overflow-auto">
+        <ul className="absolute z-50 mt-1 w-full bg-white border rounded-lg shadow-lg max-h-60 overflow-auto" role="listbox">
           {filtered.length === 0 ? (
             <li className="px-3 py-2 text-sm text-gray-400">没有匹配的用户</li>
           ) : (
-            filtered.map(u => (
+            filtered.map((u, idx) => (
               <li
-                key={u.openId ?? u.userId}
+                key={u.openId}
+                role="option"
+                aria-selected={idx === highlightIdx}
                 onMouseDown={() => handleSelect(u)}
-                className="flex items-center gap-2 px-3 py-2 hover:bg-blue-50 cursor-pointer"
+                onMouseEnter={() => setHighlightIdx(idx)}
+                className={`flex items-center gap-2 px-3 py-2 cursor-pointer ${idx === highlightIdx ? 'bg-blue-50' : 'hover:bg-blue-50'}`}
               >
                 <div className="flex-1 min-w-0">
                   <div className="text-sm font-medium text-gray-800 truncate">
@@ -139,8 +172,6 @@ export default function UserCombobox({ value, onChange, users, placeholder = '�
         </ul>
       )}
 
-      {/* Hidden input so form validation knows a value is selected */}
-      {required && <input type="hidden" required value={value ?? ''} />}
     </div>
   );
 }
