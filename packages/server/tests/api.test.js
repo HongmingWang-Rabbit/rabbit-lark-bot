@@ -21,14 +21,27 @@ jest.mock('../src/db', () => ({
   },
 }));
 
+// Mock users DB (separate module from ../src/db)
+jest.mock('../src/db/users', () => ({
+  list: jest.fn().mockResolvedValue([]),
+  findByEmail: jest.fn().mockResolvedValue(null),
+  findByOpenId: jest.fn().mockResolvedValue(null),
+  findByFeishuUserId: jest.fn().mockResolvedValue(null),
+  getById: jest.fn().mockResolvedValue(null),
+  upsert: jest.fn().mockResolvedValue({ user_id: 'test', role: 'user', configs: {} }),
+  autoProvision: jest.fn().mockResolvedValue({ user_id: 'test', role: 'user', configs: {} }),
+  setRole: jest.fn().mockResolvedValue({ user_id: 'test', role: 'admin', configs: {} }),
+  updateConfigs: jest.fn().mockResolvedValue({ user_id: 'test', role: 'user', configs: {} }),
+  updateProfile: jest.fn().mockResolvedValue({ user_id: 'test', role: 'user', configs: {} }),
+  setFeature: jest.fn().mockResolvedValue({ user_id: 'test', role: 'user', configs: {} }),
+  deleteUser: jest.fn().mockResolvedValue({ user_id: 'test' }),
+}));
+
 // Mock feishu client
 jest.mock('../src/feishu/client', () => ({
   getUserByEmail: jest.fn().mockResolvedValue({ user_id: 'test_user_id' }),
   sendMessage: jest.fn().mockResolvedValue({}),
-  bitable: {
-    getRecords: jest.fn().mockResolvedValue({ data: { items: [] } }),
-    searchRecords: jest.fn().mockResolvedValue({ data: { items: [] } }),
-  },
+  resolveUserInfo: jest.fn().mockResolvedValue(null),
 }));
 
 // Mock logger
@@ -40,20 +53,15 @@ jest.mock('../src/utils/logger', () => ({
   middleware: (req, res, next) => next(),
 }));
 
-// Mock reminder service
+// Mock reminder service (Postgres-backed, plain DB rows)
 jest.mock('../src/services/reminder', () => ({
   getAllTasks: jest.fn().mockResolvedValue([]),
   getAllPendingTasks: jest.fn().mockResolvedValue([]),
-  extractFieldText: jest.fn((f) => f),
-  FIELDS: {
-    TASK_NAME: '任务名称',
-    TARGET: '催办对象',
-    STATUS: '状态',
-  },
-  STATUS: {
-    PENDING: '待办',
-    COMPLETED: '已完成',
-  },
+  getUserPendingTasks: jest.fn().mockResolvedValue([]),
+  createTask: jest.fn().mockResolvedValue({ id: 1, title: 'Test', status: 'pending' }),
+  completeTask: jest.fn().mockResolvedValue({ id: 1, status: 'completed' }),
+  deleteTask: jest.fn().mockResolvedValue({ id: 1 }),
+  DEFAULT_DEADLINE_DAYS: 3,
 }));
 
 const apiRoutes = require('../src/routes/api');

@@ -1,47 +1,31 @@
 const express = require('express');
 const router = express.Router();
 const { admins, settings, audit } = require('../db');
+const usersDb = require('../db/users');
 const reminderService = require('../services/reminder');
 const feishu = require('../feishu/client');
 
 // ============ Dashboard ============
 
-// 获取仪表盘数据
 router.get('/dashboard', async (req, res) => {
   try {
-    const builtinEnabled = process.env.ENABLE_BUILTIN_BOT !== 'false';
-    const users = require('../db/users');
-
-    const [adminList, recentLogs, allUsers] = await Promise.all([
+    const [adminList, recentLogs, allUsers, allTasks, pendingTasks] = await Promise.all([
       admins.list(),
       audit.list({ limit: 10 }),
-      users.list({ limit: 1000 }),
+      usersDb.list({ limit: 1000 }),
+      reminderService.getAllTasks(),
+      reminderService.getAllPendingTasks(),
     ]);
-
-    // Only call reminder service if builtin bot is enabled
-    let totalTasks = 0, pendingTasks = 0, completedTasks = 0;
-    if (builtinEnabled) {
-      const [allTasks, pending] = await Promise.all([
-        reminderService.getAllTasks(),
-        reminderService.getAllPendingTasks(),
-      ]);
-      totalTasks = allTasks.length;
-      pendingTasks = pending.length;
-      completedTasks = allTasks.filter(t =>
-        reminderService.extractFieldText(t.fields[reminderService.FIELDS.STATUS]) === reminderService.STATUS.COMPLETED
-      ).length;
-    }
 
     res.json({
       stats: {
-        totalTasks,
-        pendingTasks,
-        completedTasks,
+        totalTasks: allTasks.length,
+        pendingTasks: pendingTasks.length,
+        completedTasks: allTasks.filter(t => t.status === 'completed').length,
         adminCount: adminList.length,
         totalUsers: allUsers.length,
       },
       recentActivity: recentLogs,
-      builtinEnabled,
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -50,51 +34,42 @@ router.get('/dashboard', async (req, res) => {
 
 // ============ Tasks ============
 
-// 获取所有任务
+// 获取所有任务（DB rows，直接返回）
 router.get('/tasks', async (req, res) => {
   try {
     const tasks = await reminderService.getAllTasks();
-    const { FIELDS } = reminderService;
-    const formatted = tasks.map(t => ({
-      id: t.record_id,
-      name: reminderService.extractFieldText(t.fields[FIELDS.TASK_NAME]),
-      target: reminderService.extractFieldText(t.fields[FIELDS.TARGET]),
-      status: reminderService.extractFieldText(t.fields[FIELDS.STATUS]),
-      deadline: t.fields[FIELDS.DEADLINE],
-      proof: t.fields[FIELDS.PROOF]?.link || null,
-      note: reminderService.extractFieldText(t.fields[FIELDS.NOTE]),
-      createdAt: t.fields[FIELDS.CREATED_AT]
-    }));
-    res.json(formatted);
+    res.json(tasks);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// 创建任务
+// 创建任务（通过邮箱查找被催办人）
 router.post('/tasks', async (req, res) => {
   try {
-    const { taskName, targetEmail, deadline, note, creatorId } = req.body;
-    
-    if (!taskName || !targetEmail) {
+    const { title, targetEmail, deadline, note, creatorId } = req.body;
+
+    if (!title || !targetEmail) {
       return res.status(400).json({ error: '任务名称和目标用户必填' });
     }
 
-    // 通过邮箱获取 user_id
-    const user = await feishu.getUserByEmail(targetEmail);
-    if (!user?.user_id) {
-      return res.status(400).json({ error: `找不到用户: ${targetEmail}` });
+    // 从本地 DB 查找目标用户（已通过飞书消息自动注册）
+    const targetUser = await usersDb.findByEmail(targetEmail);
+    if (!targetUser?.feishu_user_id) {
+      return res.status(400).json({ error: `找不到用户: ${targetEmail}（请确认用户已发送过飞书消息）` });
     }
 
-    const record = await reminderService.createTask({
-      taskName,
-      targetUserId: user.user_id,
+    const task = await reminderService.createTask({
+      title,
+      assigneeId: targetUser.feishu_user_id,
+      assigneeOpenId: targetUser.open_id || null,
+      assigneeName: targetUser.name || null,
       deadline,
       note,
-      creatorId
+      creatorId,
     });
 
-    res.json({ success: true, record });
+    res.json({ success: true, task });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -104,8 +79,8 @@ router.post('/tasks', async (req, res) => {
 router.post('/tasks/:id/complete', async (req, res) => {
   try {
     const { proof, userId } = req.body;
-    await reminderService.completeTask(req.params.id, proof, userId);
-    res.json({ success: true });
+    const task = await reminderService.completeTask(parseInt(req.params.id, 10), proof, userId);
+    res.json({ success: true, task });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -115,8 +90,8 @@ router.post('/tasks/:id/complete', async (req, res) => {
 router.delete('/tasks/:id', async (req, res) => {
   try {
     const { userId } = req.body;
-    await reminderService.deleteTask(req.params.id, userId);
-    res.json({ success: true });
+    const task = await reminderService.deleteTask(parseInt(req.params.id, 10), userId);
+    res.json({ success: true, task });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
