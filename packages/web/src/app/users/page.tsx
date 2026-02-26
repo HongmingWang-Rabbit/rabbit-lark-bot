@@ -330,5 +330,16 @@ function Loading() {
 }
 
 function Err({ msg }: { msg: string }) {
-  return <div className="text-center py-16 text-red-500">❌ {msg}</div>;
+  return (
+    <div className="text-center py-16">
+      <p className="text-red-500 font-medium">❌ 加载失败</p>
+      <p className="text-sm text-gray-500 mt-2 font-mono break-all max-w-lg mx-auto">{msg}</p>
+      <button
+        onClick={() => window.location.reload()}
+        className="mt-4 text-sm text-blue-500 hover:underline"
+      >
+        重试
+      </button>
+    </div>
+  );
 }

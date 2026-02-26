@@ -9,7 +9,8 @@ export default function Dashboard() {
   if (isLoading) return <LoadingState />;
   if (error) return <ErrorState message={error.message} />;
 
-  const stats = data?.stats || { totalTasks: 0, pendingTasks: 0, completedTasks: 0, adminCount: 0 };
+  const stats = data?.stats || { totalTasks: 0, pendingTasks: 0, completedTasks: 0, adminCount: 0, totalUsers: 0 };
+  const builtinEnabled = data?.builtinEnabled ?? false;
   const activity = data?.recentActivity || [];
 
   return (
@@ -18,9 +19,9 @@ export default function Dashboard() {
       
       {/* 统计卡片 */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
-        <StatCard title="总任务数" value={stats.totalTasks} color="blue" />
-        <StatCard title="待办任务" value={stats.pendingTasks} color="yellow" />
-        <StatCard title="已完成" value={stats.completedTasks} color="green" />
+        <StatCard title="注册用户" value={stats.totalUsers} color="blue" />
+        {builtinEnabled && <StatCard title="待办任务" value={stats.pendingTasks} color="yellow" />}
+        {builtinEnabled && <StatCard title="已完成任务" value={stats.completedTasks} color="green" />}
         <StatCard title="管理员" value={stats.adminCount} color="purple" />
       </div>
 

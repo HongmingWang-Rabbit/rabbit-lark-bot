@@ -81,8 +81,10 @@ export interface DashboardData {
     pendingTasks: number;
     completedTasks: number;
     adminCount: number;
+    totalUsers: number;
   };
   recentActivity: AuditLog[];
+  builtinEnabled: boolean;
 }
 
 export interface ApiError {

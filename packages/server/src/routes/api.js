@@ -9,23 +9,39 @@ const feishu = require('../feishu/client');
 // 获取仪表盘数据
 router.get('/dashboard', async (req, res) => {
   try {
-    const [allTasks, pendingTasks, adminList, recentLogs] = await Promise.all([
-      reminderService.getAllTasks(),
-      reminderService.getAllPendingTasks(),
+    const builtinEnabled = process.env.ENABLE_BUILTIN_BOT !== 'false';
+    const users = require('../db/users');
+
+    const [adminList, recentLogs, allUsers] = await Promise.all([
       admins.list(),
-      audit.list({ limit: 10 })
+      audit.list({ limit: 10 }),
+      users.list({ limit: 1000 }),
     ]);
+
+    // Only call reminder service if builtin bot is enabled
+    let totalTasks = 0, pendingTasks = 0, completedTasks = 0;
+    if (builtinEnabled) {
+      const [allTasks, pending] = await Promise.all([
+        reminderService.getAllTasks(),
+        reminderService.getAllPendingTasks(),
+      ]);
+      totalTasks = allTasks.length;
+      pendingTasks = pending.length;
+      completedTasks = allTasks.filter(t =>
+        reminderService.extractFieldText(t.fields[reminderService.FIELDS.STATUS]) === reminderService.STATUS.COMPLETED
+      ).length;
+    }
 
     res.json({
       stats: {
-        totalTasks: allTasks.length,
-        pendingTasks: pendingTasks.length,
-        completedTasks: allTasks.filter(t => 
-          reminderService.extractFieldText(t.fields[reminderService.FIELDS.STATUS]) === reminderService.STATUS.COMPLETED
-        ).length,
-        adminCount: adminList.length
+        totalTasks,
+        pendingTasks,
+        completedTasks,
+        adminCount: adminList.length,
+        totalUsers: allUsers.length,
       },
-      recentActivity: recentLogs
+      recentActivity: recentLogs,
+      builtinEnabled,
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
