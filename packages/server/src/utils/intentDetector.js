@@ -5,10 +5,13 @@
  * Used to intercept messages before they reach the AI agent.
  *
  * Intents:
- *   'greeting'  — hi, hello, 你好, 嗨, etc.
- *   'menu'      — explicit menu/help request
- *   'command'   — starts with /
- *   'unknown'   — everything else (let AI handle it)
+ *   'greeting'         — hi, hello, 你好, 嗨, etc.
+ *   'menu'             — explicit menu/help request
+ *   'cuiban_view'      — 我的任务, 任务列表, /list, /tasks
+ *   'cuiban_complete'  — 完成 [...], done, /done
+ *   'cuiban_create'    — /add ...
+ *   'command'          — other slash commands
+ *   'unknown'          — everything else (let AI handle it)
  */
 
 const GREETING_PATTERNS = [
@@ -21,21 +24,47 @@ const MENU_PATTERNS = [
   /^(菜单|帮助|功能|help|menu|我能做什么|能做什么|怎么用|使用说明|指令|命令|我能干嘛|有什么功能)/i,
 ];
 
+// 催办 view: 我的任务 / 任务列表 / 待办
+const CUIBAN_VIEW_PATTERNS = [
+  /^(我的任务|任务列表|我的待办|待办任务|查看任务|\/list|\/tasks)$/i,
+];
+
+// 催办 complete: 完成... / done / /done / /complete
+const CUIBAN_COMPLETE_PATTERNS = [
+  /^(完成|done|\/done|\/complete)(\s.*)?$/i,
+];
+
+// 催办 create: /add ...
+const CUIBAN_CREATE_PATTERN = /^\/add(\s|$)/i;
+
 /**
  * Detect the intent of a message.
  * @param {string} text - Raw message text
- * @returns {'greeting' | 'menu' | 'command' | 'unknown'}
+ * @returns {'greeting' | 'menu' | 'cuiban_view' | 'cuiban_complete' | 'cuiban_create' | 'command' | 'unknown'}
  */
 function detectIntent(text) {
   if (!text) return 'unknown';
   const trimmed = text.trim();
 
-  // Explicit slash commands
+  // Cuiban create (/add ...) — check before generic slash command
+  if (CUIBAN_CREATE_PATTERN.test(trimmed)) return 'cuiban_create';
+
+  // Explicit slash commands (catch-all)
   if (trimmed.startsWith('/')) return 'command';
 
   // Explicit menu/help request
   for (const pattern of MENU_PATTERNS) {
     if (pattern.test(trimmed)) return 'menu';
+  }
+
+  // Cuiban view
+  for (const pattern of CUIBAN_VIEW_PATTERNS) {
+    if (pattern.test(trimmed)) return 'cuiban_view';
+  }
+
+  // Cuiban complete
+  for (const pattern of CUIBAN_COMPLETE_PATTERNS) {
+    if (pattern.test(trimmed)) return 'cuiban_complete';
   }
 
   // Greeting patterns

@@ -146,20 +146,26 @@ const users = {
 
   /**
    * Set a single feature toggle for a user.
+   * featureId must be validated (alphanumeric + underscore) before calling.
    */
   async setFeature(userId, featureId, enabled) {
     if (typeof enabled !== 'boolean') throw new Error('enabled must be boolean');
+    // Guard: featureId must be safe for jsonb path (alphanumeric + underscore only)
+    if (!/^[a-z0-9_]+$/i.test(featureId)) {
+      throw new Error(`Invalid featureId: ${featureId}`);
+    }
+    // jsonb_set path cannot be fully parameterized in pg; featureId is validated above
     const result = await pool.query(
       `UPDATE users
        SET configs = jsonb_set(
            configs,
-           '{features, ${featureId}}',
+           $3::text[],
            $2::jsonb,
            true
          )
        WHERE user_id = $1
        RETURNING *`,
-      [userId, JSON.stringify(enabled)]
+      [userId, JSON.stringify(enabled), `{features,${featureId}}`]
     );
     if (!result.rows[0]) throw new Error(`User not found: ${userId}`);
     return result.rows[0];

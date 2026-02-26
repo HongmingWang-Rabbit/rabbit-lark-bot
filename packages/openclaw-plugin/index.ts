@@ -61,6 +61,13 @@ interface RabbitLarkContent {
   [key: string]: unknown;
 }
 
+interface RabbitLarkUserContext {
+  userId?: string;
+  name?: string;
+  role?: string;
+  allowedFeatures?: Record<string, boolean>;
+}
+
 interface RabbitLarkPayload {
   event?: string;
   message_id?: string;
@@ -71,6 +78,7 @@ interface RabbitLarkPayload {
   timestamp?: number;
   reply_via?: { api?: string; mcp?: string };
   source?: { bridge?: string; platform?: string; version?: string };
+  userContext?: RabbitLarkUserContext;
   _raw?: unknown;
 }
 
@@ -162,11 +170,32 @@ async function processInbound(payload: RabbitLarkPayload, rawBody: string): Prom
     ? `${senderLabel(payload.user, chatType)} in group:${chatId}`
     : `user:${userId}`;
 
+  // Build permission note so the agent knows what this user is allowed to do
+  let bodyText = text;
+  if (payload.userContext) {
+    const uc = payload.userContext;
+    const allowed = Object.entries(uc.allowedFeatures ?? {})
+      .filter(([, v]) => v)
+      .map(([k]) => k);
+    const denied = Object.entries(uc.allowedFeatures ?? {})
+      .filter(([, v]) => !v)
+      .map(([k]) => k);
+    const permissionNote = [
+      `[User: ${uc.name ?? uc.userId ?? "unknown"} | Role: ${uc.role ?? "user"}]`,
+      allowed.length ? `Allowed features: ${allowed.join(", ")}` : "Allowed features: none",
+      denied.length ? `Denied features: ${denied.join(", ")}` : "",
+      "IMPORTANT: Only respond to requests that use the user's allowed features. Politely refuse anything outside their allowed scope.",
+    ]
+      .filter(Boolean)
+      .join("\n");
+    bodyText = `${text}\n\n${permissionNote}`;
+  }
+
   const body = core.channel.reply.formatAgentEnvelope({
     channel: "Lark (Feishu)",
     from,
     timestamp,
-    body: text,
+    body: bodyText,
   });
 
   const ctxPayload = core.channel.reply.finalizeInboundContext({

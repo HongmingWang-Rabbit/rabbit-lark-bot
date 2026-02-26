@@ -113,21 +113,38 @@ async function request(path, options = {}) {
  * @param {string} receiveIdType - ID 类型 (user_id | open_id | chat_id)
  * @returns {Promise<Object>} 飞书 API 响应
  */
-async function sendMessage(receiveId, text, receiveIdType = 'user_id') {
-  const result = await request(`/im/v1/messages?receive_id_type=${receiveIdType}`, {
+async function sendMessage(receiveId, text, receiveIdType = 'user_id', replyToMessageId = null) {
+  const body = {
+    receive_id: receiveId,
+    msg_type: 'text',
+    content: JSON.stringify({ text }),
+  };
+
+  // Thread reply: include reply_in_thread if replying to a specific message
+  if (replyToMessageId) {
+    body.reply_in_thread = true;
+  }
+
+  let url = `/im/v1/messages?receive_id_type=${receiveIdType}`;
+
+  // Use reply endpoint if replying to a specific message
+  if (replyToMessageId) {
+    url = `/im/v1/messages/${replyToMessageId}/reply`;
+    // Reply API doesn't use receive_id or receive_id_type
+    delete body.receive_id;
+    delete body.reply_in_thread;
+  }
+
+  const result = await request(url, {
     method: 'POST',
-    body: JSON.stringify({
-      receive_id: receiveId,
-      msg_type: 'text',
-      content: JSON.stringify({ text }),
-    }),
+    body: JSON.stringify(body),
   });
-  
+
   // 检查飞书 API 错误
   if (result.code && result.code !== 0) {
     throw new Error(`Feishu API error: ${result.code} - ${result.msg}`);
   }
-  
+
   return result;
 }
 

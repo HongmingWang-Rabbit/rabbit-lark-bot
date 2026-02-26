@@ -4,7 +4,7 @@ const router = express.Router();
 const feishu = require('../feishu/client');
 const { admins } = require('../db');
 const usersDb = require('../db/users');
-const { can } = require('../features');
+const { resolveFeatures } = require('../features');
 const { detectIntent } = require('../utils/intentDetector');
 const { buildMenu } = require('../utils/menuBuilder');
 const reminderService = require('../services/reminder');
@@ -137,6 +137,7 @@ router.post('/event', async (req, res) => {
     }
 
     const chatId = event.message?.chat_id;
+    const messageId = event.message?.message_id;
     const openId = event.sender?.sender_id?.open_id;
 
     // 自动注册用户（首次见到时创建记录）
@@ -185,7 +186,6 @@ router.post('/event', async (req, res) => {
 
     // 权限检查：用户必须至少有一项功能权限
     if (user) {
-      const { resolveFeatures } = require('../features');
       const resolved = resolveFeatures(user);
       user.resolvedFeatures = resolved;
       const hasAnyFeature = Object.values(resolved).some(Boolean);
@@ -196,6 +196,45 @@ router.post('/event', async (req, res) => {
         }
         return res.json({ success: true });
       }
+    }
+
+    // ── 催办会话：数字选择（完成任务流程中途回复数字）─────────────────────
+    const sessionKey = openId || senderId;
+    const activeSession = getSession(sessionKey);
+    if (activeSession?.step === 'complete_select' && /^\d+$/.test(messageText.trim())) {
+      const idx = parseInt(messageText.trim(), 10) - 1;
+      if (idx >= 0 && idx < activeSession.tasks.length) {
+        const task = activeSession.tasks[idx];
+        deleteSession(sessionKey);
+        await completeTaskAndReply(task, activeSession.proof || '', user, senderId, chatId, messageId).catch((err) => {
+          logger.error('Complete task error', { error: err.message });
+          feishu.sendMessage(chatId, '⚠️ 完成任务失败，请稍后重试。', 'chat_id').catch(() => {});
+        });
+        return res.json({ success: true });
+      } else {
+        const count = activeSession.tasks.length;
+        await feishu.sendMessage(chatId, `❌ 请输入 1-${count} 之间的数字`, 'chat_id').catch(() => {});
+        return res.json({ success: true });
+      }
+    }
+
+    // ── 催办直接命令（cuiban_view / cuiban_complete / cuiban_create）────────
+    if (['cuiban_view', 'cuiban_complete', 'cuiban_create'].includes(intent)) {
+      logger.info('Handling cuiban command', { intent, senderId });
+      const handled = await handleCuibanCommand({
+        intent,
+        text: messageText,
+        user,
+        senderId,
+        chatId,
+        messageId,
+        sessionKey,
+      }).catch((err) => {
+        logger.error('Cuiban command error', { error: err.message });
+        feishu.sendMessage(chatId, '⚠️ 命令处理失败，请稍后重试。', 'chat_id').catch(() => {});
+        return true; // mark as handled (error already sent)
+      });
+      if (handled) return res.json({ success: true });
     }
 
     // 转发给配置的 AI Agent（附带用户权限上下文）
@@ -214,14 +253,19 @@ router.post('/event', async (req, res) => {
 
     // 内置的催办功能（可选，保留向后兼容）
     if (process.env.ENABLE_BUILTIN_BOT !== 'false' && msgType === 'text' && senderId) {
-      const content = JSON.parse(event.message.content);
-      // 异步处理，立即返回
-      handleUserMessage(senderId, content.text).catch((err) => {
-        logger.error('Message handling failed', {
-          error: err.message,
-          userId: senderId,
-        });
-      });
+      try {
+        const content = JSON.parse(event.message.content || '{}');
+        if (content.text) {
+          handleUserMessage(senderId, content.text).catch((err) => {
+            logger.error('Message handling failed', {
+              error: err.message,
+              userId: senderId,
+            });
+          });
+        }
+      } catch (parseErr) {
+        logger.warn('Failed to parse builtin bot message content', { error: parseErr.message });
+      }
     }
   }
 
@@ -427,6 +471,240 @@ async function sendHelpMessage(userId, isAdmin) {
   }
 
   await feishu.sendMessage(userId, help);
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 催办命令处理器
+// ══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * 检查催办功能是否已配置（需要飞书多维表格环境变量）
+ */
+function isReminderConfigured() {
+  return !!(process.env.REMINDER_APP_TOKEN && process.env.REMINDER_TABLE_ID);
+}
+
+/**
+ * 向聊天发送回复（优先线程回复，否则发到 chat）
+ */
+async function replyToChat(chatId, messageId, text) {
+  if (messageId) {
+    return feishu.sendMessage(chatId, text, 'chat_id', messageId).catch(() =>
+      // Fallback: send to chat without threading
+      feishu.sendMessage(chatId, text, 'chat_id')
+    );
+  }
+  return feishu.sendMessage(chatId, text, 'chat_id');
+}
+
+/**
+ * 完成任务并通知用户
+ */
+async function completeTaskAndReply(task, proof, user, senderId, chatId, messageId) {
+  const taskName = reminderService.extractFieldText(task.fields[reminderService.FIELDS.TASK_NAME]);
+  await reminderService.completeTask(task.record_id, proof || '', senderId);
+  let reply = `✅ 已完成任务「${taskName}」！`;
+  if (proof) reply += `\n📎 证明：${proof}`;
+  await replyToChat(chatId, messageId, reply);
+}
+
+/**
+ * 主催办命令处理函数
+ * @param {object} params
+ * @param {string} params.intent - 'cuiban_view' | 'cuiban_complete' | 'cuiban_create'
+ * @param {string} params.text - 原始消息文本
+ * @param {object} params.user - 用户记录（含 resolvedFeatures）
+ * @param {string} params.senderId - 飞书 feishu_user_id（用于 Bitable 操作）
+ * @param {string} params.chatId - 聊天 ID
+ * @param {string} params.messageId - 消息 ID（用于线程回复）
+ * @param {string} params.sessionKey - 会话 key（openId || senderId）
+ * @returns {Promise<boolean>} true if handled
+ */
+async function handleCuibanCommand({ intent, text, user, senderId, chatId, messageId, sessionKey }) {
+  // 功能未配置时给出明确提示
+  if (!isReminderConfigured()) {
+    await replyToChat(
+      chatId,
+      messageId,
+      '⚠️ 催办功能尚未配置，请联系管理员设置 REMINDER_APP_TOKEN 和 REMINDER_TABLE_ID'
+    );
+    return true;
+  }
+
+  const resolved = user?.resolvedFeatures || resolveFeatures(user || { role: 'user', configs: {} });
+
+  // ── 查看任务 ──────────────────────────────────────────────────────────────
+  if (intent === 'cuiban_view') {
+    if (!resolved.cuiban_view) {
+      await replyToChat(chatId, messageId, '🚫 你没有查看催办任务的权限，请联系管理员');
+      return true;
+    }
+
+    const tasks = await reminderService.getUserPendingTasks(senderId);
+
+    if (!tasks.length) {
+      await replyToChat(chatId, messageId, '🎉 你目前没有待办的催办任务！');
+      return true;
+    }
+
+    let msg = `📋 你的待办任务（${tasks.length} 项）：\n\n`;
+    tasks.forEach((t, i) => {
+      const name = reminderService.extractFieldText(t.fields[reminderService.FIELDS.TASK_NAME]);
+      const deadlineMs = t.fields[reminderService.FIELDS.DEADLINE];
+      const deadlineStr = deadlineMs
+        ? new Date(deadlineMs).toLocaleDateString('zh-CN', { month: 'long', day: 'numeric' })
+        : '无截止日期';
+      msg += `${i + 1}. ${name}\n   📅 ${deadlineStr}\n`;
+    });
+    msg += '\n发送「完成 N」标记对应任务完成';
+    await replyToChat(chatId, messageId, msg);
+    return true;
+  }
+
+  // ── 完成任务 ──────────────────────────────────────────────────────────────
+  if (intent === 'cuiban_complete') {
+    if (!resolved.cuiban_complete) {
+      await replyToChat(chatId, messageId, '🚫 你没有完成任务的权限，请联系管理员');
+      return true;
+    }
+
+    // 解析参数：可能包含任务名/序号 + 证明链接
+    const match = text.trim().match(/^(?:完成|done|\/done|\/complete)\s*([\s\S]*)?$/i);
+    const arg = (match?.[1] || '').trim();
+
+    // 提取证明链接（URL）
+    const urlMatch = arg.match(/(https?:\/\/[^\s]+)/);
+    const proof = urlMatch?.[1] || '';
+    const cleanArg = arg.replace(/(https?:\/\/[^\s]+)/g, '').trim();
+
+    const tasks = await reminderService.getUserPendingTasks(senderId);
+
+    if (!tasks.length) {
+      await replyToChat(chatId, messageId, '✅ 你目前没有待办任务');
+      return true;
+    }
+
+    let targetTask = null;
+
+    // 尝试数字序号选择
+    if (/^\d+$/.test(cleanArg)) {
+      const idx = parseInt(cleanArg, 10) - 1;
+      if (idx >= 0 && idx < tasks.length) targetTask = tasks[idx];
+    }
+
+    // 尝试任务名模糊匹配
+    if (!targetTask && cleanArg) {
+      targetTask = tasks.find((t) => {
+        const name = reminderService.extractFieldText(t.fields[reminderService.FIELDS.TASK_NAME]);
+        return name.includes(cleanArg) || cleanArg.includes(name);
+      });
+    }
+
+    // 只有一个任务 → 直接完成
+    if (!targetTask && tasks.length === 1) {
+      targetTask = tasks[0];
+    }
+
+    if (targetTask) {
+      await completeTaskAndReply(targetTask, proof, user, senderId, chatId, messageId);
+      return true;
+    }
+
+    // 多个任务，让用户选择
+    let msg = `你有 ${tasks.length} 个待办任务，请回复编号选择：\n\n`;
+    tasks.forEach((t, i) => {
+      const name = reminderService.extractFieldText(t.fields[reminderService.FIELDS.TASK_NAME]);
+      msg += `${i + 1}. ${name}\n`;
+    });
+    msg += '\n（回复数字选择，如「1」）';
+
+    setSession(sessionKey, { tasks, proof, step: 'complete_select', chatId, messageId });
+    await replyToChat(chatId, messageId, msg);
+    return true;
+  }
+
+  // ── 创建任务 ──────────────────────────────────────────────────────────────
+  if (intent === 'cuiban_create') {
+    if (!resolved.cuiban_create) {
+      await replyToChat(chatId, messageId, '🚫 你没有创建催办任务的权限，请联系管理员');
+      return true;
+    }
+
+    // 解析格式：/add 任务名称 用户邮箱/ID [截止日期YYYY-MM-DD]
+    const addMatch = text.trim().match(/^\/add\s+(.+)$/i);
+    if (!addMatch) {
+      await replyToChat(
+        chatId,
+        messageId,
+        '📝 创建任务格式：\n/add 任务名称 用户邮箱 [截止日期]\n\n示例：\n/add 提交周报 zhangsan@company.com 2026-03-01'
+      );
+      return true;
+    }
+
+    const parts = addMatch[1].trim().split(/\s+/);
+    if (parts.length < 2) {
+      await replyToChat(
+        chatId,
+        messageId,
+        '📝 格式：/add 任务名称 用户邮箱 [截止日期]\n示例：/add 提交周报 zhangsan@company.com 2026-03-01'
+      );
+      return true;
+    }
+
+    // 解析：最后一个 YYYY-MM-DD 格式的 part 是截止日期
+    const datePattern = /^\d{4}-\d{2}-\d{2}$/;
+    let taskName, target, deadline;
+
+    if (parts.length >= 3 && datePattern.test(parts[parts.length - 1])) {
+      deadline = parts[parts.length - 1];
+      target = parts[parts.length - 2];
+      taskName = parts.slice(0, parts.length - 2).join(' ');
+    } else {
+      target = parts[parts.length - 1];
+      taskName = parts.slice(0, parts.length - 1).join(' ');
+    }
+
+    if (!taskName) {
+      await replyToChat(chatId, messageId, '❌ 任务名称不能为空');
+      return true;
+    }
+
+    // 查找目标用户（按邮箱 → 按 feishu_user_id）
+    let targetUser = null;
+    if (target.includes('@')) {
+      targetUser = await usersDb.findByEmail(target);
+    }
+    if (!targetUser) {
+      targetUser = await usersDb.findByFeishuUserId(target);
+    }
+
+    if (!targetUser || !targetUser.feishu_user_id) {
+      await replyToChat(
+        chatId,
+        messageId,
+        `❌ 找不到用户「${target}」\n请使用已注册用户的邮箱地址，或先让对方发送一条消息完成注册`
+      );
+      return true;
+    }
+
+    await reminderService.createTask({
+      taskName,
+      targetUserId: targetUser.feishu_user_id,
+      deadline,
+      creatorId: senderId,
+    });
+
+    const deadlineStr = deadline || `默认 ${reminderService.DEFAULT_DEADLINE_DAYS} 天`;
+    const targetLabel = targetUser.name || targetUser.email || target;
+    await replyToChat(
+      chatId,
+      messageId,
+      `✅ 任务已创建！\n📋 ${taskName}\n👤 → ${targetLabel}\n📅 截止：${deadlineStr}`
+    );
+    return true;
+  }
+
+  return false;
 }
 
 module.exports = router;
