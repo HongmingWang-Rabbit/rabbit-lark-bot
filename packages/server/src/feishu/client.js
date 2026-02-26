@@ -244,9 +244,10 @@ async function resolveUserInfo(userId, userIdType = 'user_id') {
       const u = result.data.user;
       return {
         email: u.email || u.enterprise_email || null,
-        mobile: u.mobile || null,   // may be masked without contact:user.mobile permission
+        mobile: u.mobile || null,         // may be masked without contact:user.mobile permission
         name: u.name || null,
         openId: u.open_id || null,
+        feishuUserId: u.user_id || null,  // on_xxx — useful when resolving by open_id
       };
     }
     logger.debug('resolveUserInfo: non-zero code', { userId, code: result.code, msg: result.msg });
