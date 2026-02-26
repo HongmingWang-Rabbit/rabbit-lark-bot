@@ -190,8 +190,9 @@ function isAgentConfigured() {
  * Forward message to the configured agent
  * @param {Object} event - Raw Lark event
  * @param {string} apiBaseUrl - This server's base URL
+ * @param {Object} [userContext] - User record with resolved features
  */
-async function forwardToOwnerAgent(event, apiBaseUrl) {
+async function forwardToOwnerAgent(event, apiBaseUrl, userContext = null) {
   const config = getAgentConfig();
   
   if (!config) {
@@ -200,6 +201,16 @@ async function forwardToOwnerAgent(event, apiBaseUrl) {
   }
   
   const message = formatForAgent(event, apiBaseUrl);
+
+  // Attach user context so the agent knows what this user is allowed to do
+  if (userContext) {
+    message.userContext = {
+      userId: userContext.user_id,
+      name: userContext.name,
+      role: userContext.role,
+      allowedFeatures: userContext.resolvedFeatures ?? {},
+    };
+  }
   
   try {
     const result = await forwardToAgent(config.webhookUrl, message, {

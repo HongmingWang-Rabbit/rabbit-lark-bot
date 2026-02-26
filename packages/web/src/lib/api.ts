@@ -36,6 +36,29 @@ export interface AddAdminParams {
   role?: 'admin' | 'superadmin';
 }
 
+export type UserRole = 'superadmin' | 'admin' | 'user';
+
+export interface User {
+  id: number;
+  userId: string;
+  openId: string | null;
+  name: string | null;
+  email: string | null;
+  role: UserRole;
+  configs: { features?: Record<string, boolean> };
+  resolvedFeatures?: Record<string, boolean>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface Feature {
+  id: string;
+  label: string;
+  description: string;
+  defaultFor: 'all' | string[];
+  adminOnly: boolean;
+}
+
 export interface Setting {
   key: string;
   value: unknown;
@@ -152,6 +175,28 @@ export const api = {
     const query = params ? new URLSearchParams(params as Record<string, string>).toString() : '';
     return fetchAPI<AuditLog[]>(`/audit${query ? `?${query}` : ''}`);
   },
+
+  // Users
+  getUsers: () => fetchAPI<{ users: User[] }>('/users').then(r => r.users),
+
+  getUser: (userId: string) => fetchAPI<{ user: User }>(`/users/${userId}`).then(r => r.user),
+
+  upsertUser: (data: { userId: string; name?: string; email?: string; role?: UserRole; openId?: string }) =>
+    fetchAPI<{ user: User }>('/users', { method: 'POST', body: JSON.stringify(data) }).then(r => r.user),
+
+  updateUser: (userId: string, data: { role?: UserRole; configs?: { features?: Record<string, boolean> } }) =>
+    fetchAPI<{ user: User }>(`/users/${userId}`, { method: 'PATCH', body: JSON.stringify(data) }).then(r => r.user),
+
+  setFeature: (userId: string, featureId: string, enabled: boolean) =>
+    fetchAPI<{ user: User }>(`/users/${userId}/features/${featureId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ enabled }),
+    }).then(r => r.user),
+
+  deleteUser: (userId: string) =>
+    fetchAPI<{ success: boolean }>(`/users/${userId}`, { method: 'DELETE' }),
+
+  getFeatures: () => fetchAPI<{ features: Feature[] }>('/users/_features').then(r => r.features),
 };
 
 export default api;

@@ -13,16 +13,6 @@ const { resolveFeatures } = require('../features');
  */
 const MENU_SECTIONS = [
   {
-    title: '🤖 AI 对话',
-    items: [
-      {
-        feature: 'ai_chat',
-        command: '直接发消息',
-        desc: '和 AI 助手对话，提问、分析、总结都可以',
-      },
-    ],
-  },
-  {
     title: '📋 催办任务',
     items: [
       {
@@ -89,7 +79,7 @@ function buildMenu(user, opts = {}) {
   let msg = opts.isGreeting
     ? `👋 你好${name}！（${roleLabel}）\n`
     : `📱 功能菜单（${roleLabel}）\n`;
-  msg += '以下是你可以使用的功能：\n';
+  msg += '以下是你有权限使用的功能，请直接用自然语言描述你的需求：\n';
 
   let hasAnyFeature = false;
 
@@ -106,7 +96,10 @@ function buildMenu(user, opts = {}) {
 
   if (!hasAnyFeature) {
     msg += '\n⚠️ 你目前没有任何可用功能，请联系管理员开通权限。';
+    return msg;
   }
+
+  msg += '\n💡 发送「菜单」随时查看此列表';
 
   return msg;
 }

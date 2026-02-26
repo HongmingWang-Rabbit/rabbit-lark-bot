@@ -17,15 +17,6 @@
  */
 
 const FEATURES = {
-  // ── AI / Chat ─────────────────────────────────────────────────────────────
-  ai_chat: {
-    id: 'ai_chat',
-    label: 'AI 对话',
-    description: '向 AI Agent 发送消息并获取回复',
-    defaultFor: 'all',
-    adminOnly: false,
-  },
-
   // ── 催办 (Reminder / Task) ─────────────────────────────────────────────────
   cuiban_view: {
     id: 'cuiban_view',

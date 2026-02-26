@@ -8,3 +8,16 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-info}
       NODE_ENV: ${NODE_ENV:-production}
       FEISHU_ENCRYPT_KEY: ${FEISHU_ENCRYPT_KEY}
+
+  web:
+    build:
+      context: ./packages/web
+      dockerfile: Dockerfile
+    container_name: rabbit-lark-web
+    restart: unless-stopped
+    depends_on:
+      - server
+    environment:
+      NEXT_PUBLIC_API_URL: http://server:3456/api
+    ports:
+      - "3000:3000"

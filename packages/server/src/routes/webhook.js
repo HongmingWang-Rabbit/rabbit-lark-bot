@@ -173,18 +173,24 @@ router.post('/event', async (req, res) => {
       return res.json({ success: true });
     }
 
-    // 权限检查：ai_chat
-    if (user && !can(user, 'ai_chat')) {
-      logger.info('User lacks ai_chat permission, dropping message', { senderId });
-      if (chatId) {
-        feishu.sendMessage(chatId, '⚠️ 您暂无使用 AI 对话的权限，请联系管理员。', 'chat_id').catch(() => {});
+    // 权限检查：用户必须至少有一项功能权限
+    if (user) {
+      const { resolveFeatures } = require('../features');
+      const resolved = resolveFeatures(user);
+      user.resolvedFeatures = resolved;
+      const hasAnyFeature = Object.values(resolved).some(Boolean);
+      if (!hasAnyFeature) {
+        logger.info('User has no features, blocking message', { senderId });
+        if (chatId) {
+          feishu.sendMessage(chatId, '⚠️ 你目前没有任何可用功能，请联系管理员开通权限。', 'chat_id').catch(() => {});
+        }
+        return res.json({ success: true });
       }
-      return res.json({ success: true });
     }
 
-    // 转发给配置的 AI Agent（单 agent 模式）
+    // 转发给配置的 AI Agent（附带用户权限上下文）
     const apiBaseUrl = process.env.API_BASE_URL || `http://localhost:${process.env.PORT || 3456}`;
-    agentForwarder.forwardToOwnerAgent(event, apiBaseUrl).catch(async (err) => {
+    agentForwarder.forwardToOwnerAgent(event, apiBaseUrl, user).catch(async (err) => {
       logger.error('Agent forwarding failed', { error: err.message });
       // 通知用户转发失败
       if (chatId) {
