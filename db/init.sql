@@ -70,6 +70,7 @@ CREATE TABLE IF NOT EXISTS users (
     email VARCHAR(255),                       -- 邮箱
     role VARCHAR(20) NOT NULL DEFAULT 'user', -- superadmin / admin / user
     configs JSONB NOT NULL DEFAULT '{}',      -- 每用户功能配置（覆盖默认值）
+    phone VARCHAR(50),                        -- 手机号（从飞书 Contact API 获取）
     created_at TIMESTAMP DEFAULT NOW(),
     updated_at TIMESTAMP DEFAULT NOW()
 );

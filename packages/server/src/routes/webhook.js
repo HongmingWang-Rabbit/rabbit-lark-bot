@@ -155,6 +155,7 @@ router.post('/event', async (req, res) => {
         user = await usersDb.autoProvision({
           openId,
           email: userInfo?.email || null,
+          phone: userInfo?.mobile || null,
           name: userInfo?.name || null,
           feishuUserId: senderId || null,
         });

@@ -45,6 +45,7 @@ export interface User {
   feishuUserId: string | null;
   name: string | null;
   email: string | null;
+  phone: string | null;
   role: UserRole;
   configs: { features?: Record<string, boolean> };
   resolvedFeatures?: Record<string, boolean>;

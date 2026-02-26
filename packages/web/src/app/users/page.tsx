@@ -146,6 +146,9 @@ function UserRow({
           </div>
           <p className="text-xs text-gray-400 font-mono mt-0.5 truncate">
             {user.email && user.email !== user.userId ? user.email : user.userId}
+            {user.phone && (
+              <span className="ml-2 text-gray-400">· {user.phone}</span>
+            )}
           </p>
         </div>
 

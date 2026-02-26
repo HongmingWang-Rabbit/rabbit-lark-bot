@@ -55,10 +55,10 @@ router.get('/:userId', async (req, res) => {
 
 router.post('/', async (req, res) => {
   try {
-    const { userId, openId, name, email, role, configs } = req.body;
+    const { userId, openId, name, email, phone, role, configs } = req.body;
     if (!userId) return res.status(400).json({ error: 'userId is required' });
 
-    const user = await users.upsert({ userId, openId, name, email, role, configs });
+    const user = await users.upsert({ userId, openId, name, email, phone, role, configs });
     logger.info('User upserted', { userId, role: user.role });
     res.json({ success: true, user: formatUser(user, true) });
   } catch (err) {
@@ -72,13 +72,16 @@ router.post('/', async (req, res) => {
 router.patch('/:userId', async (req, res) => {
   try {
     const { userId } = req.params;
-    const { role, configs } = req.body;
+    const { role, configs, name, email, phone } = req.body;
 
     let user = await users.getById(userId);
     if (!user) return res.status(404).json({ error: 'User not found' });
 
     if (role) user = await users.setRole(userId, role);
     if (configs) user = await users.updateConfigs(userId, configs);
+    if (name !== undefined || email !== undefined || phone !== undefined) {
+      user = await users.updateProfile(userId, { name, email, phone });
+    }
 
     logger.info('User updated', { userId });
     res.json({ success: true, user: formatUser(user, true) });
@@ -139,6 +142,7 @@ function formatUser(user, withResolved = false) {
     feishuUserId: user.feishu_user_id,
     name: user.name,
     email: user.email,
+    phone: user.phone,
     role: user.role,
     configs: user.configs,
     createdAt: user.created_at,

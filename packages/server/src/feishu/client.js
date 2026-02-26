@@ -233,7 +233,7 @@ async function getUserInfo(userId) {
  * 若飞书 app 没有 contact 权限，静默返回 null
  * @param {string} userId - 飞书 user_id (on_xxx) 或 open_id
  * @param {'user_id'|'open_id'} userIdType
- * @returns {Promise<{email: string|null, name: string|null, openId: string|null}|null>}
+ * @returns {Promise<{email: string|null, mobile: string|null, name: string|null, openId: string|null}|null>}
  */
 async function resolveUserInfo(userId, userIdType = 'user_id') {
   try {
@@ -244,6 +244,7 @@ async function resolveUserInfo(userId, userIdType = 'user_id') {
       const u = result.data.user;
       return {
         email: u.email || u.enterprise_email || null,
+        mobile: u.mobile || null,   // may be masked without contact:user.mobile permission
         name: u.name || null,
         openId: u.open_id || null,
       };
