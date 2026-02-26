@@ -116,6 +116,9 @@ REMINDER_TABLE_ID=xxx
 # 启动所有服务
 docker-compose up -d
 
+# 只启动 postgres + server（跳过 web）
+docker-compose up -d postgres server
+
 # 查看日志
 docker-compose logs -f
 
@@ -127,6 +130,8 @@ docker-compose down
 - **3456** - API Server + Webhook
 - **3000** - Web Dashboard
 - **5432** - PostgreSQL（仅本地访问）
+
+> **Docker 网络说明：** Server 容器已配置 `extra_hosts`，可通过 `host.docker.internal` 访问宿主机服务。如果你的 AI Agent 运行在宿主机上（如 OpenClaw），将 `AGENT_WEBHOOK_URL` 设为 `http://host.docker.internal:<port>`。
 
 ### 4. 配置飞书
 

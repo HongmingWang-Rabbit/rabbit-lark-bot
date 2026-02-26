@@ -26,6 +26,8 @@ services:
       dockerfile: Dockerfile
     container_name: rabbit-lark-server
     restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       postgres:
         condition: service_healthy
