@@ -269,7 +269,7 @@ router.post('/event', async (req, res) => {
       if (idx >= 0 && idx < activeSession.tasks.length) {
         const task = activeSession.tasks[idx];
         deleteSession(sessionKey);
-        await completeTaskAndReply(task, activeSession.proof || '', user, senderId, chatId, messageId).catch((err) => {
+        await completeTaskAndReply(task, activeSession.proof || '', user, user?.user_id || senderId, chatId, messageId).catch((err) => {
           logger.error('Complete task error', { error: err.message });
           feishu.sendMessage(chatId, '⚠️ 完成任务失败，请稍后重试。', 'chat_id').catch(() => {});
         });
@@ -289,6 +289,7 @@ router.post('/event', async (req, res) => {
         text: messageText,
         user,
         senderId,
+        openId,
         chatId,
         messageId,
         sessionKey,
@@ -314,22 +315,6 @@ router.post('/event', async (req, res) => {
       }
     });
 
-    // 内置的催办功能（可选，保留向后兼容）
-    if (process.env.ENABLE_BUILTIN_BOT !== 'false' && msgType === 'text' && senderId) {
-      try {
-        const content = JSON.parse(event.message.content || '{}');
-        if (content.text) {
-          handleUserMessage(senderId, content.text).catch((err) => {
-            logger.error('Message handling failed', {
-              error: err.message,
-              userId: senderId,
-            });
-          });
-        }
-      } catch (parseErr) {
-        logger.warn('Failed to parse builtin bot message content', { error: parseErr.message });
-      }
-    }
   }
 
   res.json({ success: true });
@@ -356,7 +341,11 @@ async function replyToChat(chatId, messageId, text) {
  */
 async function completeTaskAndReply(task, proof, user, senderId, chatId, messageId) {
   const completerName = user?.name || user?.email || null;
-  await reminderService.completeTask(task.id, proof || '', senderId, completerName);
+  const completed = await reminderService.completeTask(task.id, proof || '', senderId, completerName);
+  if (!completed) {
+    await replyToChat(chatId, messageId, `⚠️ 任务「${task.title}」不存在或已完成`);
+    return;
+  }
   let reply = `✅ 已完成任务「${task.title}」！`;
   if (proof) reply += `\n📎 证明：${proof}`;
   await replyToChat(chatId, messageId, reply);
@@ -374,8 +363,11 @@ async function completeTaskAndReply(task, proof, user, senderId, chatId, message
  * @param {string} params.sessionKey - 会话 key（openId || senderId）
  * @returns {Promise<boolean>} true if handled
  */
-async function handleCuibanCommand({ intent, text, user, senderId, chatId, messageId, sessionKey }) {
+async function handleCuibanCommand({ intent, text, user, senderId, openId, chatId, messageId, sessionKey }) {
   const resolved = user?.resolvedFeatures || resolveFeatures(user || { role: 'user', configs: {} });
+
+  // 用于任务查询的 feishu_user_id：优先用 DB 里存的（autoProvision 可能从 contact API 补全过）
+  const effectiveSenderId = user?.user_id || senderId;
 
   // ── 查看任务 ──────────────────────────────────────────────────────────────
   if (intent === 'cuiban_view') {
@@ -384,7 +376,12 @@ async function handleCuibanCommand({ intent, text, user, senderId, chatId, messa
       return true;
     }
 
-    const tasks = await reminderService.getUserPendingTasks(senderId);
+    if (!effectiveSenderId) {
+      await replyToChat(chatId, messageId, '⚠️ 无法识别你的飞书用户 ID，请联系管理员');
+      return true;
+    }
+
+    const tasks = await reminderService.getUserPendingTasks(effectiveSenderId);
 
     if (!tasks.length) {
       await replyToChat(chatId, messageId, '🎉 你目前没有待办的催办任务！');
@@ -419,7 +416,12 @@ async function handleCuibanCommand({ intent, text, user, senderId, chatId, messa
     const proof = urlMatch?.[1] || '';
     const cleanArg = arg.replace(/(https?:\/\/[^\s]+)/g, '').trim();
 
-    const tasks = await reminderService.getUserPendingTasks(senderId);
+    if (!effectiveSenderId) {
+      await replyToChat(chatId, messageId, '⚠️ 无法识别你的飞书用户 ID，请联系管理员');
+      return true;
+    }
+
+    const tasks = await reminderService.getUserPendingTasks(effectiveSenderId);
 
     if (!tasks.length) {
       await replyToChat(chatId, messageId, '✅ 你目前没有待办任务');
@@ -445,7 +447,7 @@ async function handleCuibanCommand({ intent, text, user, senderId, chatId, messa
     }
 
     if (targetTask) {
-      await completeTaskAndReply(targetTask, proof, user, senderId, chatId, messageId);
+      await completeTaskAndReply(targetTask, proof, user, effectiveSenderId, chatId, messageId);
       return true;
     }
 

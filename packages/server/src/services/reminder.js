@@ -135,6 +135,10 @@ async function completeTask(taskId, proof, userId, completerName) {
   );
 
   const task = result.rows[0];
+  if (!task) {
+    logger.warn('completeTask: task not found or already completed', { taskId });
+    return null;
+  }
 
   if (userId) {
     audit
