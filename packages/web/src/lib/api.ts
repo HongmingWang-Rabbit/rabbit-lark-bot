@@ -42,6 +42,7 @@ export interface User {
   id: number;
   userId: string;
   openId: string | null;
+  feishuUserId: string | null;
   name: string | null;
   email: string | null;
   role: UserRole;

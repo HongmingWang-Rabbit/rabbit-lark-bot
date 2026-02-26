@@ -212,6 +212,37 @@ async function getUserInfo(userId) {
 }
 
 /**
+ * 解析用户信息（email + name），用于首次消息时建立身份映射
+ * 若飞书 app 没有 contact 权限，静默返回 null
+ * @param {string} userId - 飞书 user_id (on_xxx) 或 open_id
+ * @param {'user_id'|'open_id'} userIdType
+ * @returns {Promise<{email: string|null, name: string|null, openId: string|null}|null>}
+ */
+async function resolveUserInfo(userId, userIdType = 'user_id') {
+  try {
+    const result = await request(
+      `/contact/v3/users/${encodeURIComponent(userId)}?user_id_type=${userIdType}`
+    );
+    if (result.code === 0 && result.data?.user) {
+      const u = result.data.user;
+      return {
+        email: u.email || u.enterprise_email || null,
+        name: u.name || null,
+        openId: u.open_id || null,
+      };
+    }
+    logger.debug('resolveUserInfo: non-zero code', { userId, code: result.code, msg: result.msg });
+    return null;
+  } catch (err) {
+    logger.debug('resolveUserInfo failed (likely no contact permission)', {
+      userId,
+      error: err.message,
+    });
+    return null;
+  }
+}
+
+/**
  * 回复消息
  * @param {string} messageId - 要回复的消息 ID
  * @param {string} text - 回复内容
@@ -323,6 +354,7 @@ module.exports = {
   getMessageHistory,
   getUserByEmail,
   getUserInfo,
+  resolveUserInfo,
   bitable,
   // 常量导出
   BASE_URL,

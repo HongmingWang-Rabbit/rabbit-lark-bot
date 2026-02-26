@@ -136,6 +136,7 @@ function formatUser(user, withResolved = false) {
     id: user.id,
     userId: user.user_id,
     openId: user.open_id,
+    feishuUserId: user.feishu_user_id,
     name: user.name,
     email: user.email,
     role: user.role,

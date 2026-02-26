@@ -127,15 +127,26 @@ function UserRow({
         </div>
 
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <span className="font-medium text-gray-900 truncate">
-              {user.name ?? <span className="text-gray-400 italic">未命名</span>}
+              {user.name ?? user.email ?? <span className="text-gray-400 italic">未命名</span>}
             </span>
             <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${ROLE_COLORS[user.role]}`}>
               {ROLE_LABELS[user.role]}
             </span>
+            {(user.openId || user.feishuUserId) ? (
+              <span className="text-xs px-1.5 py-0.5 rounded-full bg-green-50 text-green-600 border border-green-200">
+                ✓ 已关联
+              </span>
+            ) : (
+              <span className="text-xs px-1.5 py-0.5 rounded-full bg-gray-50 text-gray-400 border border-gray-200">
+                待关联
+              </span>
+            )}
           </div>
-          <p className="text-xs text-gray-400 font-mono mt-0.5 truncate">{user.userId}</p>
+          <p className="text-xs text-gray-400 font-mono mt-0.5 truncate">
+            {user.email && user.email !== user.userId ? user.email : user.userId}
+          </p>
         </div>
 
         <div className="flex items-center gap-3 flex-shrink-0">
@@ -239,16 +250,19 @@ function UserRow({
 // ── AddUserModal ──────────────────────────────────────────────────────────────
 
 function AddUserModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
-  const [form, setForm] = useState({ userId: '', name: '', email: '', role: 'user' as UserRole });
+  const [form, setForm] = useState({ email: '', name: '', role: 'user' as UserRole });
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState('');
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!form.userId.trim()) { setErr('Feishu User ID 必填'); return; }
+    const email = form.email.trim().toLowerCase();
+    if (!email) { setErr('邮箱必填'); return; }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { setErr('邮箱格式不正确'); return; }
     setLoading(true);
     try {
-      await api.upsertUser({ userId: form.userId.trim(), name: form.name || undefined, email: form.email || undefined, role: form.role });
+      // email is the canonical userId for admin-provisioned users
+      await api.upsertUser({ userId: email, email, name: form.name || undefined, role: form.role });
       onSaved();
     } catch (e: any) {
       setErr(e.message);
@@ -261,13 +275,17 @@ function AddUserModal({ onClose, onSaved }: { onClose: () => void; onSaved: () =
     <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
       <div className="bg-white rounded-xl shadow-xl p-6 w-full max-w-md mx-4">
         <h3 className="text-lg font-bold text-gray-900 mb-4">添加用户</h3>
+        <p className="text-sm text-gray-500 mb-4">
+          按邮箱添加用户。用户首次发送飞书消息时系统会自动将其邮箱与飞书账号关联。
+        </p>
         <form onSubmit={handleSubmit} className="space-y-4">
-          <Field label="Feishu User ID *" hint="飞书用户的 user_id（ou_xxx 或 user_id 格式）">
+          <Field label="邮箱 *" hint="用于识别用户身份，需与飞书账号邮箱一致">
             <input
-              value={form.userId}
-              onChange={e => setForm(f => ({ ...f, userId: e.target.value }))}
+              type="email"
+              value={form.email}
+              onChange={e => setForm(f => ({ ...f, email: e.target.value }))}
               className="input"
-              placeholder="ou_xxxxx 或 user_id"
+              placeholder="user@company.com"
               autoFocus
             />
           </Field>
@@ -275,14 +293,6 @@ function AddUserModal({ onClose, onSaved }: { onClose: () => void; onSaved: () =
             <input
               value={form.name}
               onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
-              className="input"
-              placeholder="可选"
-            />
-          </Field>
-          <Field label="邮箱">
-            <input
-              value={form.email}
-              onChange={e => setForm(f => ({ ...f, email: e.target.value }))}
               className="input"
               placeholder="可选"
             />

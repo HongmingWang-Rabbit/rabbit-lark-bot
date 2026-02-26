@@ -140,13 +140,23 @@ router.post('/event', async (req, res) => {
     const openId = event.sender?.sender_id?.open_id;
 
     // 自动注册用户（首次见到时创建记录）
+    // 优先使用 email 作为标识符（需要飞书 contact 权限），降级到 feishu_user_id
     let user = null;
-    if (senderId) {
+    if (openId || senderId) {
       try {
+        // Quick check: already in DB by open_id (avoid unnecessary Feishu API call)
+        let userInfo = null;
+        const existing = await usersDb.findByOpenId(openId);
+        if (!existing) {
+          // First time — resolve email via Feishu contact API (silent fail if no permission)
+          userInfo = senderId ? await feishu.resolveUserInfo(senderId).catch(() => null) : null;
+        }
+
         user = await usersDb.autoProvision({
-          userId: senderId,
           openId,
-          name: null, // Feishu event doesn't carry display name; can be enriched later
+          email: userInfo?.email || null,
+          name: userInfo?.name || null,
+          feishuUserId: senderId || null,
         });
       } catch (provisionErr) {
         logger.warn('User auto-provision failed', { senderId, error: provisionErr.message });

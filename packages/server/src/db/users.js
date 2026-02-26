@@ -4,6 +4,12 @@
  * Handles all CRUD for the users table.
  * Each user has a role (superadmin/admin/user) and a configs JSONB field
  * that stores per-user feature overrides.
+ *
+ * Identity model:
+ *   user_id       = canonical ID (email if known, else Feishu user_id)
+ *   email         = human-readable identifier; used for admin provisioning
+ *   open_id       = Feishu open_id (ou_xxx) for sending messages
+ *   feishu_user_id = Feishu internal user_id (on_xxx) from webhook sender_id
  */
 
 const pool = require('./pool');
@@ -14,15 +20,46 @@ const VALID_ROLES = ['superadmin', 'admin', 'user'];
 
 const users = {
   /**
-   * Find a user by user_id or open_id.
-   * Returns null if not found.
+   * Find a user by any known identifier.
+   * Priority: open_id > email > feishu_user_id > user_id
    */
   async get(userId, openId = null) {
     const result = await pool.query(
       `SELECT * FROM users
-       WHERE user_id = $1 OR ($2::varchar IS NOT NULL AND open_id = $2)
+       WHERE user_id = $1
+          OR ($2::varchar IS NOT NULL AND open_id = $2)
        LIMIT 1`,
       [userId, openId]
+    );
+    return result.rows[0] || null;
+  },
+
+  /** Find by open_id (Feishu ou_xxx) */
+  async findByOpenId(openId) {
+    if (!openId) return null;
+    const result = await pool.query(
+      'SELECT * FROM users WHERE open_id = $1 LIMIT 1',
+      [openId]
+    );
+    return result.rows[0] || null;
+  },
+
+  /** Find by email */
+  async findByEmail(email) {
+    if (!email) return null;
+    const result = await pool.query(
+      'SELECT * FROM users WHERE email = $1 LIMIT 1',
+      [email]
+    );
+    return result.rows[0] || null;
+  },
+
+  /** Find by Feishu user_id (on_xxx) stored in feishu_user_id column */
+  async findByFeishuUserId(feishuUserId) {
+    if (!feishuUserId) return null;
+    const result = await pool.query(
+      'SELECT * FROM users WHERE feishu_user_id = $1 LIMIT 1',
+      [feishuUserId]
     );
     return result.rows[0] || null;
   },
@@ -39,10 +76,25 @@ const users = {
   },
 
   /**
+   * Link Feishu IDs to an existing user record (when email was pre-provisioned).
+   */
+  async linkFeishuIds(userId, { openId, feishuUserId }) {
+    const result = await pool.query(
+      `UPDATE users
+       SET open_id         = COALESCE(open_id, $2),
+           feishu_user_id  = COALESCE(feishu_user_id, $3)
+       WHERE user_id = $1
+       RETURNING *`,
+      [userId, openId ?? null, feishuUserId ?? null]
+    );
+    return result.rows[0] || null;
+  },
+
+  /**
    * Upsert a user (insert or update on conflict).
    * Only provided fields are updated.
    */
-  async upsert({ userId, openId, name, email, role = 'user', configs }) {
+  async upsert({ userId, openId, name, email, role = 'user', configs, feishuUserId }) {
     if (!userId) throw new Error('userId is required');
     if (role && !VALID_ROLES.includes(role)) {
       throw new Error(`Invalid role: ${role}. Must be one of: ${VALID_ROLES.join(', ')}`);
@@ -51,16 +103,17 @@ const users = {
     const safeConfigs = configs ? validateConfigs(configs) : undefined;
 
     const result = await pool.query(
-      `INSERT INTO users (user_id, open_id, name, email, role, configs)
-       VALUES ($1, $2, $3, $4, $5, $6)
+      `INSERT INTO users (user_id, open_id, name, email, role, configs, feishu_user_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
        ON CONFLICT (user_id) DO UPDATE SET
-         open_id   = COALESCE($2, users.open_id),
-         name      = COALESCE($3, users.name),
-         email     = COALESCE($4, users.email),
-         role      = COALESCE($5, users.role),
-         configs   = CASE WHEN $6::jsonb IS NOT NULL
-                          THEN $6::jsonb
-                          ELSE users.configs END
+         open_id         = COALESCE($2, users.open_id),
+         name            = COALESCE($3, users.name),
+         email           = COALESCE($4, users.email),
+         role            = COALESCE($5, users.role),
+         configs         = CASE WHEN $6::jsonb IS NOT NULL
+                                THEN $6::jsonb
+                                ELSE users.configs END,
+         feishu_user_id  = COALESCE($7, users.feishu_user_id)
        RETURNING *`,
       [
         userId,
@@ -69,6 +122,7 @@ const users = {
         email ?? null,
         role,
         safeConfigs ? JSON.stringify(safeConfigs) : null,
+        feishuUserId ?? null,
       ]
     );
     return result.rows[0];
@@ -76,7 +130,6 @@ const users = {
 
   /**
    * Update only the configs field for a user.
-   * Merges deeply: existing keys not in newConfigs are preserved.
    */
   async updateConfigs(userId, newConfigs) {
     const safeConfigs = validateConfigs(newConfigs);
@@ -168,15 +221,63 @@ const users = {
   },
 
   /**
-   * Auto-provision a user on first seen (role: 'user', empty configs).
-   * Returns existing user if already present.
+   * Auto-provision a user on first contact.
+   *
+   * Lookup order:
+   *   1. open_id match          → link feishu_user_id if missing, return
+   *   2. email match            → link open_id + feishu_user_id, return
+   *   3. feishu_user_id match   → return
+   *   4. Create new user:
+   *        user_id = email (if resolved) or feishuUserId
+   *
+   * @param {object} opts
+   * @param {string} opts.openId        - Feishu open_id (ou_xxx)
+   * @param {string} [opts.email]       - resolved email (may be null if no contact perm)
+   * @param {string} [opts.name]        - resolved display name
+   * @param {string} [opts.feishuUserId] - Feishu user_id from webhook (on_xxx)
    */
-  async autoProvision({ userId, openId, name }) {
-    const existing = await users.get(userId, openId);
-    if (existing) return existing;
+  async autoProvision({ openId, email, name, feishuUserId }) {
+    // 1. Fast path: already linked by open_id
+    const byOpenId = await users.findByOpenId(openId);
+    if (byOpenId) {
+      // Opportunistically fill in missing feishu_user_id
+      if (!byOpenId.feishu_user_id && feishuUserId) {
+        return users.linkFeishuIds(byOpenId.user_id, { feishuUserId }) || byOpenId;
+      }
+      return byOpenId;
+    }
 
-    logger.info('Auto-provisioning new user', { userId, name });
-    return users.upsert({ userId, openId, name, role: 'user', configs: {} });
+    // 2. Admin pre-provisioned by email
+    if (email) {
+      const byEmail = await users.findByEmail(email);
+      if (byEmail) {
+        logger.info('Linking Feishu IDs to pre-provisioned email user', {
+          email,
+          openId,
+          feishuUserId,
+        });
+        return (await users.linkFeishuIds(byEmail.user_id, { openId, feishuUserId })) || byEmail;
+      }
+    }
+
+    // 3. Previously auto-provisioned without email
+    if (feishuUserId) {
+      const byFeishu = await users.findByFeishuUserId(feishuUserId);
+      if (byFeishu) return byFeishu;
+    }
+
+    // 4. Create new
+    const newUserId = email || feishuUserId || openId;
+    logger.info('Auto-provisioning new user', { newUserId, email, openId, feishuUserId });
+    return users.upsert({
+      userId: newUserId,
+      openId,
+      email: email || null,
+      name: name || null,
+      feishuUserId: feishuUserId || null,
+      role: 'user',
+      configs: {},
+    });
   },
 };
 
