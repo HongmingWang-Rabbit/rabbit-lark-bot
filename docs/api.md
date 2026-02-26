@@ -1,32 +1,21 @@
 # API 文档
 
-Base URL: `http://localhost:3456`
+Base URL: `http://your-server:3456`
 
 ## 认证
 
-API 支持两种认证方式：
-
-### 1. API Key (推荐)
 ```
 X-API-Key: your_api_key
-```
-
-### 2. Bearer Token
-```
+# 或
 Authorization: Bearer your_api_key
 ```
 
-**注意：** 如果未配置 `API_KEY` 环境变量，API 将处于未保护状态（仅建议开发环境）。
+未设置 `API_KEY` 环境变量时，API 处于未保护状态（仅用于开发）。
 
-## Rate Limiting
+## 限流
 
-- API 接口：100 请求/分钟
-- Webhook：200 请求/分钟
-
-响应头：
-- `X-RateLimit-Limit` - 窗口内最大请求数
-- `X-RateLimit-Remaining` - 剩余请求数
-- `Retry-After` - 被限流后需等待秒数
+- API：100 请求/分钟/IP
+- Webhook：200 请求/分钟/IP
 
 ---
 
@@ -34,265 +23,12 @@ Authorization: Bearer your_api_key
 
 ### GET /health
 
-检查服务状态
-
-**Response:**
 ```json
 {
   "status": "ok",
-  "timestamp": "2026-02-25T21:00:00.000Z",
+  "timestamp": "2026-02-26T10:00:00.000Z",
   "version": "1.0.0"
 }
-```
-
----
-
-## Dashboard
-
-### GET /api/dashboard
-
-获取仪表盘统计数据
-
-**Response:**
-```json
-{
-  "stats": {
-    "totalTasks": 10,
-    "pendingTasks": 3,
-    "completedTasks": 7,
-    "adminCount": 2
-  },
-  "recentActivity": [
-    {
-      "id": 1,
-      "user_id": "ou_xxx",
-      "action": "create_task",
-      "target_type": "task",
-      "target_id": "recXXX",
-      "details": {},
-      "created_at": "2026-02-25T21:00:00.000Z"
-    }
-  ]
-}
-```
-
----
-
-## Tasks 任务
-
-### GET /api/tasks
-
-获取所有任务列表
-
-**Response:**
-```json
-[
-  {
-    "id": "recXXX",
-    "name": "提交周报",
-    "target": "张三",
-    "status": "待办",
-    "deadline": 1740000000000,
-    "proof": null,
-    "note": "",
-    "createdAt": 1739900000000
-  }
-]
-```
-
-### POST /api/tasks
-
-创建新任务
-
-**Request Body:**
-```json
-{
-  "taskName": "提交周报",
-  "targetEmail": "zhangsan@company.com",
-  "deadline": "2026-03-01",
-  "note": "本周五前"
-}
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "record": {
-    "record_id": "recXXX",
-    "fields": { ... }
-  }
-}
-```
-
-### POST /api/tasks/:id/complete
-
-标记任务完成
-
-**Request Body:**
-```json
-{
-  "proof": "https://example.com/proof.pdf",
-  "userId": "ou_xxx"
-}
-```
-
-**Response:**
-```json
-{
-  "success": true
-}
-```
-
-### DELETE /api/tasks/:id
-
-删除任务
-
-**Request Body:**
-```json
-{
-  "userId": "ou_xxx"
-}
-```
-
-**Response:**
-```json
-{
-  "success": true
-}
-```
-
----
-
-## Admins 管理员
-
-### GET /api/admins
-
-获取管理员列表
-
-**Response:**
-```json
-[
-  {
-    "id": 1,
-    "user_id": "ou_xxx",
-    "email": "admin@company.com",
-    "name": "管理员",
-    "role": "admin",
-    "created_at": "2026-02-25T21:00:00.000Z",
-    "updated_at": "2026-02-25T21:00:00.000Z"
-  }
-]
-```
-
-### POST /api/admins
-
-添加管理员
-
-**Request Body:**
-```json
-{
-  "userId": "ou_xxx",
-  "email": "admin@company.com",
-  "name": "管理员",
-  "role": "admin"
-}
-```
-
-**Response:**
-```json
-{
-  "id": 1,
-  "user_id": "ou_xxx",
-  "email": "admin@company.com",
-  "name": "管理员",
-  "role": "admin",
-  "created_at": "2026-02-25T21:00:00.000Z"
-}
-```
-
-### DELETE /api/admins/:userId
-
-移除管理员
-
-**Response:**
-```json
-{
-  "success": true,
-  "removed": { ... }
-}
-```
-
----
-
-## Settings 配置
-
-### GET /api/settings
-
-获取所有配置
-
-**Response:**
-```json
-[
-  {
-    "key": "default_deadline_days",
-    "value": 3,
-    "description": "默认截止天数"
-  },
-  {
-    "key": "timezone",
-    "value": "Asia/Shanghai",
-    "description": "时区"
-  }
-]
-```
-
-### PUT /api/settings/:key
-
-更新配置
-
-**Request Body:**
-```json
-{
-  "value": 5,
-  "description": "更新后的描述"
-}
-```
-
-**Response:**
-```json
-{
-  "success": true
-}
-```
-
----
-
-## Audit 审计日志
-
-### GET /api/audit
-
-获取审计日志
-
-**Query Parameters:**
-- `limit` (number) - 返回数量，默认 50
-- `offset` (number) - 偏移量，默认 0
-- `userId` (string) - 按用户过滤
-- `action` (string) - 按操作类型过滤
-
-**Response:**
-```json
-[
-  {
-    "id": 1,
-    "user_id": "ou_xxx",
-    "action": "create_task",
-    "target_type": "task",
-    "target_id": "recXXX",
-    "details": { "taskName": "提交周报" },
-    "created_at": "2026-02-25T21:00:00.000Z"
-  }
-]
 ```
 
 ---
@@ -301,90 +37,354 @@ Authorization: Bearer your_api_key
 
 ### POST /webhook/event
 
-飞书事件回调地址
+飞书事件回调，由飞书服务器调用，无需手动调用。
 
-用于接收飞书推送的消息事件。
-
-**URL 验证请求:**
+**URL 验证：**
 ```json
-{
-  "type": "url_verification",
-  "challenge": "xxx"
-}
+// 请求
+{ "encrypt": "<AES加密内容>" }
+// 解密后
+{ "type": "url_verification", "challenge": "xxx" }
+// 响应
+{ "challenge": "xxx" }
 ```
 
-**响应:**
-```json
-{
-  "challenge": "xxx"
-}
-```
+---
 
-**消息事件:**
+## Dashboard
+
+### GET /api/dashboard
+
 ```json
 {
-  "header": {
-    "event_type": "im.message.receive_v1"
+  "stats": {
+    "totalTasks": 10,
+    "pendingTasks": 3,
+    "completedTasks": 7,
+    "adminCount": 2,
+    "totalUsers": 15
   },
-  "event": {
-    "message": {
-      "message_type": "text",
-      "content": "{\"text\":\"任务\"}"
-    },
-    "sender": {
-      "sender_id": {
-        "user_id": "ou_xxx"
-      }
+  "recentActivity": [
+    {
+      "id": 1,
+      "user_id": "ou_xxx",
+      "action": "create_task",
+      "target_type": "task",
+      "target_id": "5",
+      "details": { "title": "提交报告" },
+      "created_at": "2026-02-26T10:00:00.000Z"
     }
-  }
+  ]
 }
 ```
 
 ---
 
-## 错误响应
+## 催办任务
 
-所有 API 在出错时返回统一格式：
+### GET /api/tasks
+
+获取所有任务（按创建时间倒序，最多 100 条）。
+
+**Response：**
+```json
+[
+  {
+    "id": 5,
+    "title": "提交季度报告",
+    "creator_id": "on_xxx",
+    "assignee_id": "on_xxx",
+    "assignee_open_id": "ou_xxx",
+    "reporter_open_id": "ou_yyy",
+    "deadline": "2026-03-31T16:00:00.000Z",
+    "status": "pending",
+    "reminder_interval_hours": 24,
+    "last_reminded_at": null,
+    "deadline_notified_at": null,
+    "proof": null,
+    "note": "请在月底前完成",
+    "created_at": "2026-02-26T10:00:00.000Z",
+    "completed_at": null
+  }
+]
+```
+
+### POST /api/tasks
+
+创建催办任务。
+
+**Request Body：**
+```json
+{
+  "title": "提交季度报告",
+  "targetOpenId": "ou_xxx",         // 执行人 open_id（推荐，来自 UserCombobox）
+  "targetEmail": "user@company.com", // 备选：按邮箱查找执行人
+  "reporterOpenId": "ou_yyy",        // 报告对象 open_id（可选）
+  "deadline": "2026-03-31",          // YYYY-MM-DD（可选）
+  "note": "请在月底前完成",           // 可选
+  "reminderIntervalHours": 24,       // 提醒间隔小时（默认 24，0=关闭）
+  "creatorId": "on_xxx"             // 创建者 feishu_user_id（可选，用于审计）
+}
+```
+
+**Response：**
+```json
+{
+  "success": true,
+  "task": { /* 完整任务对象 */ }
+}
+```
+
+**错误：**
+- `400` — 标题或目标用户未提供
+- `400` — 找不到目标用户（未发过飞书消息）
+
+### POST /api/tasks/:id/complete
+
+标记任务完成（会触发通知报告对象）。
+
+**Request Body：**
+```json
+{
+  "proof": "https://example.com/report.pdf",  // 完成证明（可选）
+  "userId": "on_xxx"                           // 操作人 feishu_user_id（可选，审计用）
+}
+```
+
+**Response：**
+```json
+{
+  "success": true,
+  "task": { /* 更新后的任务对象 */ }
+}
+```
+
+**错误：**
+- `404` — 任务不存在或已完成
+
+### DELETE /api/tasks/:id
+
+删除任务。
+
+**Request Body：**
+```json
+{ "userId": "on_xxx" }
+```
+
+**Response：**
+```json
+{ "success": true, "task": { /* 被删除的任务 */ } }
+```
+
+**错误：**
+- `404` — 任务不存在
+
+---
+
+## 用户管理
+
+### GET /api/users
+
+获取所有用户（按创建时间倒序）。
+
+**Query Params：**
+- `role` — 过滤角色（superadmin/admin/user）
+- `limit` — 默认 100
+- `offset` — 默认 0
+
+**Response：**
+```json
+{
+  "users": [
+    {
+      "id": 1,
+      "userId": "ou_xxx",
+      "openId": "ou_xxx",
+      "feishuUserId": "on_xxx",
+      "name": "王泓铭",
+      "email": null,
+      "phone": null,
+      "role": "user",
+      "configs": { "features": {} },
+      "createdAt": "2026-02-26T05:40:00.000Z",
+      "updatedAt": "2026-02-26T07:00:00.000Z"
+    }
+  ]
+}
+```
+
+### POST /api/users
+
+创建或更新用户（按 userId/openId 查重）。
+
+**Request Body：**
+```json
+{
+  "userId": "ou_xxx",
+  "openId": "ou_xxx",
+  "name": "张三",
+  "email": "zhangsan@company.com",
+  "role": "admin"
+}
+```
+
+### PATCH /api/users/:userId
+
+更新用户信息（部分更新）。
+
+**Request Body（任意字段）：**
+```json
+{
+  "name": "张三",
+  "email": "zhangsan@company.com",
+  "phone": "138xxxxxxxx",
+  "role": "admin"
+}
+```
+
+### PATCH /api/users/:userId/features
+
+修改用户功能开关（覆盖角色默认值）。
+
+**Request Body：**
+```json
+{
+  "feature": "cuiban_create",
+  "enabled": true
+}
+```
+
+### DELETE /api/users/:userId
+
+删除用户。
+
+---
+
+## 管理员
+
+### GET /api/admins
+
+### POST /api/admins
 
 ```json
 {
-  "error": "错误描述信息"
+  "userId": "ou_xxx",
+  "email": "admin@company.com",
+  "name": "管理员",
+  "role": "admin"  // admin | superadmin
 }
 ```
 
-HTTP 状态码：
-- `400` - 请求参数错误
-- `401` - 未授权
-- `403` - 禁止访问（无权限）
-- `404` - 资源不存在
-- `429` - 请求过多（被限流）
-- `500` - 服务器内部错误
-- `503` - 服务不可用（数据库故障）
+### DELETE /api/admins/:userId
 
 ---
 
-## 飞书机器人命令
+## 系统配置
 
-### 普通用户
+### GET /api/settings
 
-| 命令 | 说明 |
-|-----|------|
-| `任务` / `待办` / `/list` | 查看自己的待办任务 |
-| `完成` / `done` | 标记任务完成 |
-| 发送链接 | 提交证明材料并完成任务 |
-| 数字 (1-N) | 选择多个任务中的一个 |
+```json
+[
+  { "key": "default_deadline_days", "value": 3, "description": "默认截止天数" },
+  { "key": "timezone", "value": "Asia/Shanghai", "description": "时区" },
+  { "key": "features", "value": { "cuiban": { "enabled": true } }, "description": "功能开关" }
+]
+```
 
-### 管理员
+### PUT /api/settings/:key
 
-| 命令 | 说明 |
-|-----|------|
-| `/all` / `所有任务` | 查看所有任务 |
-| `/pending` / `待办` | 查看所有待办任务 |
+```json
+{
+  "value": 5,
+  "description": "更新后的描述"
+}
+```
 
-### 交互流程
+---
 
-1. 用户发送「任务」→ 机器人返回待办列表
-2. 用户发送「完成」或链接 → 
-   - 如果只有 1 个任务：直接完成
-   - 如果有多个任务：提示选择
-3. 用户发送数字选择 → 完成对应任务
+## 审计日志
+
+### GET /api/audit
+
+**Query Params：**
+- `limit` — 默认 50
+- `offset` — 默认 0
+- `userId` — 按用户过滤
+- `action` — 按操作类型过滤
+
+**Action 类型：**
+`create_task` / `complete_task` / `delete_task` / `add_admin` / `remove_admin` / `update_settings`
+
+---
+
+## AI Agent API
+
+### GET /api/agent/status
+
+检查 Agent 配置状态。
+
+### POST /api/agent/send
+
+AI Agent 回复用户。
+
+**Request Body：**
+```json
+{
+  "chat_id": "oc_xxx",          // 必填（或 open_id）
+  "open_id": "ou_xxx",          // 必填（或 chat_id）
+  "content": "你好！",           // 回复内容
+  "message_id": "om_xxx",       // 可选，用于线程回复
+  "msg_type": "text"            // text（默认）
+}
+```
+
+### POST /api/agent/reply
+
+回复特定消息（线程内）。
+
+### POST /api/agent/react
+
+添加表情回应。
+
+---
+
+## 错误格式
+
+```json
+{ "error": "错误描述信息" }
+```
+
+| 状态码 | 含义 |
+|--------|------|
+| `400` | 请求参数错误 |
+| `401` | 未授权（缺少 API Key） |
+| `404` | 资源不存在 |
+| `429` | 请求过多（被限流） |
+| `500` | 服务器内部错误 |
+| `503` | 数据库不可用 |
+
+---
+
+## 飞书机器人命令参考
+
+### 任意用户
+
+| 消息 | 触发意图 | 响应 |
+|------|---------|------|
+| `hi` / `你好` / `帮助` | greeting | 返回动态功能菜单 |
+| `菜单` / `功能` | menu | 返回功能菜单 |
+| `我的任务` / `任务列表` | cuiban_view | 待办任务列表 |
+| `完成 [N/名称] [URL]` | cuiban_complete | 标记完成，可附证明 |
+| 数字（选择流程中） | — | 选择多任务之一 |
+
+### admin+
+
+| 消息 | 触发意图 | 响应 |
+|------|---------|------|
+| `/add 任务名 邮箱/姓名 [日期]` | cuiban_create | 创建任务，通知执行人 |
+
+### 说明
+
+- 非命令消息转发给 AI Agent
+- 无任何功能权限的用户收到"请联系管理员开通权限"
+- `/add` 支持邮箱、feishu_user_id、姓名（模糊）三种查找方式

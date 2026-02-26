@@ -1,100 +1,119 @@
 # 🐰 Rabbit Lark Bot
 
-**让任何 AI Agent 接入飞书的桥接服务**
+**飞书 AI 机器人平台** — 将飞书消息桥接到任意 AI Agent，内置用户权限管理和催办任务系统。
 
-Rabbit Lark Bot 是一个消息桥接平台，将飞书消息转发给 AI Agent，并让 Agent 通过 MCP 或 API 回复。支持任意 AI Agent 框架（Clawdbot、LangChain、AutoGPT 等）无缝接入飞书。
+---
 
-## 包含组件
+## 功能概览
 
-- **Server** - API 服务 + 飞书 Webhook + Agent 转发
-- **MCP** - Model Context Protocol 服务器（让 Agent 操作飞书）
-- **Web** - 管理后台 Dashboard
-- **Scripts** - CLI 工具脚本
+| 模块 | 描述 |
+|------|------|
+| **AI 桥接** | 飞书消息 → AI Agent（OpenClaw / LangChain / 任意 Webhook） |
+| **权限系统** | 基于角色（superadmin / admin / user）+ 每用户功能开关 |
+| **催办任务** | 飞书命令创建任务、定时提醒、截止通报、完成通知 |
+| **用户管理** | 自动注册飞书用户，收集姓名/邮箱/手机号 |
+| **管理后台** | Next.js Web Dashboard，任务/用户/权限/日志管理 |
+
+---
 
 ## 架构
 
 ```
-┌─────────────────┐         ┌──────────────────────────────────┐
-│   Lark/Feishu   │◄───────►│      Rabbit Lark Bot Server      │
-│   (用户消息)     │         │  - 接收飞书 Webhook               │
-└─────────────────┘         │  - 转发消息到 AI Agent            │
-                            │  - 提供 Agent API                 │
-                            └──────────────┬───────────────────┘
-                                           │
-                    ┌──────────────────────┼──────────────────────┐
-                    │                      │                      │
-                    ▼                      ▼                      ▼
-           ┌───────────────┐      ┌───────────────┐      ┌───────────────┐
-           │   Clawdbot    │      │   LangChain   │      │  Your Agent   │
-           │  (via MCP)    │      │  (via API)    │      │  (via API)    │
-           └───────────────┘      └───────────────┘      └───────────────┘
+飞书用户 → 飞书服务器 → /webhook/event
+                              │
+                      ┌───────▼────────────────────────────────┐
+                      │           Rabbit Lark Server            │
+                      │                                         │
+                      │  1. 解密 / 去重 / 用户自动注册          │
+                      │  2. 意图检测（greeting/menu/cuiban/AI） │
+                      │  3. 权限检查                           │
+                      │  4. 催办命令处理 OR 转发 AI Agent       │
+                      └───────┬─────────────────┬──────────────┘
+                              │                 │
+                    ┌─────────▼──────┐  ┌───────▼──────────┐
+                    │   PostgreSQL   │  │   AI Agent        │
+                    │  users / tasks │  │  (OpenClaw/其他)  │
+                    │  sessions/logs │  └──────────────────┘
+                    └────────────────┘
+                              │
+                    ┌─────────▼──────┐
+                    │  Web Dashboard │
+                    │  (Next.js:3000)│
+                    └────────────────┘
 ```
 
-### 消息格式（发送给 Agent）
-
-```json
-{
-  "source": {
-    "bridge": "rabbit-lark-bot",
-    "platform": "lark",
-    "version": "1.0.0",
-    "capabilities": ["text", "image", "file", "reply", "reaction"]
-  },
-  "reply_via": {
-    "mcp": "rabbit-lark",
-    "api": "https://your-server.com/api/agent/send"
-  },
-  "event": "message",
-  "message_id": "om_xxx",
-  "chat_id": "oc_xxx",
-  "user": { "id": "ou_xxx", "type": "user" },
-  "content": { "type": "text", "text": "Hello!" },
-  "timestamp": 1234567890
-}
-```
+---
 
 ## 目录结构
 
 ```
 rabbit-lark-bot/
-├── docker-compose.yml      # 服务编排
-├── .env                    # 配置文件（不提交）
+├── docker-compose.yml
+├── .env                        # 配置（不提交到 Git）
 ├── db/
-│   ├── init.sql            # 数据库初始化
-│   └── migrations/         # 数据库迁移
+│   ├── init.sql                # 数据库初始化（完整 schema）
+│   └── migrations/             # 增量迁移（001~007）
 ├── packages/
-│   ├── server/             # API + Webhook + Agent 转发
+│   ├── server/                 # Express API + Webhook + 业务逻辑
 │   │   └── src/
+│   │       ├── index.js        # 入口 + 定时任务
 │   │       ├── routes/
-│   │       │   ├── webhook.js   # 飞书事件接收
-│   │       │   └── agent.js     # Agent API
-│   │       └── services/
-│   │           └── agentForwarder.js  # 消息转发
-│   ├── mcp/                # MCP Server（让 Agent 操作飞书）
-│   │   └── src/index.js
-│   ├── web/                # Next.js 管理后台
-│   └── scripts/            # CLI 工具
+│   │       │   ├── webhook.js  # 飞书事件处理
+│   │       │   ├── api.js      # 管理 REST API
+│   │       │   ├── agent.js    # AI Agent API
+│   │       │   └── users.js    # 用户管理 API
+│   │       ├── services/
+│   │       │   ├── reminder.js     # 催办任务服务
+│   │       │   └── agentForwarder.js
+│   │       ├── db/
+│   │       │   ├── pool.js     # 数据库连接池
+│   │       │   ├── users.js    # 用户 CRUD
+│   │       │   ├── sessions.js # 会话持久化
+│   │       │   └── index.js    # admins / settings / audit
+│   │       ├── features/
+│   │       │   └── index.js    # 权限注册表 + resolveFeatures()
+│   │       ├── feishu/
+│   │       │   └── client.js   # 飞书 API 客户端
+│   │       └── utils/
+│   │           ├── intentDetector.js   # 意图分类
+│   │           ├── menuBuilder.js      # 动态菜单
+│   │           └── logger.js
+│   ├── web/                    # Next.js 管理后台
+│   │   └── src/
+│   │       ├── app/
+│   │       │   ├── page.tsx        # Dashboard
+│   │       │   ├── tasks/          # 催办任务管理
+│   │       │   └── users/          # 用户管理
+│   │       ├── components/
+│   │       │   └── UserCombobox.tsx  # 用户搜索下拉
+│   │       └── lib/api.ts
+│   ├── mcp/                    # MCP Server（Agent 操作飞书）
+│   └── openclaw-plugin/        # OpenClaw 频道插件
+├── scripts/
+│   └── enrich-users.js         # 手动补全用户信息
 └── docs/
+    ├── architecture.md
+    └── api.md
 ```
+
+---
 
 ## 快速开始
 
-### 1. 安装 Docker
+### 1. 前置条件
 
-```bash
-curl -fsSL https://get.docker.com | sh
-sudo usermod -aG docker $USER
-# 重新登录后生效
-```
+- Docker + Docker Compose
+- 飞书开放平台应用（App ID + Secret）
+- 公网可访问的服务器
 
-### 2. 配置
+### 2. 配置环境变量
 
 ```bash
 cp .env.example .env
 vim .env
 ```
 
-必填项：
+**必填：**
 ```env
 # 数据库
 POSTGRES_USER=rabbit
@@ -103,240 +122,224 @@ POSTGRES_DB=rabbit_lark
 
 # 飞书应用
 FEISHU_APP_ID=cli_xxx
-FEISHU_APP_SECRET=xxx
+FEISHU_APP_SECRET=your_app_secret
+FEISHU_ENCRYPT_KEY=your_encrypt_key    # 飞书事件加密密钥
 
-# 多维表格
-REMINDER_APP_TOKEN=xxx
-REMINDER_TABLE_ID=xxx
+# AI Agent
+AGENT_WEBHOOK_URL=http://host.docker.internal:18789/channels/lark/webhook
+API_BASE_URL=http://your-server:3456
 ```
 
-### 3. 启动
+**可选：**
+```env
+# 任务提醒设置
+DEFAULT_DEADLINE_DAYS=3            # 默认截止天数（默认 3）
+DEFAULT_REMINDER_INTERVAL_HOURS=24 # 默认提醒间隔（默认 24 小时）
+REMINDER_CHECK_INTERVAL_MINUTES=15 # Cron 扫描频率（默认 15 分钟）
+
+# 其他
+API_KEY=your_api_key               # 管理 API 鉴权（留空则不鉴权）
+LOG_LEVEL=info                     # error / warn / info / debug
+```
+
+### 3. 启动服务
 
 ```bash
-# 启动所有服务
-docker-compose up -d
-
-# 只启动 postgres + server（跳过 web）
-docker-compose up -d postgres server
+docker compose up -d
 
 # 查看日志
-docker-compose logs -f
+docker compose logs -f server
 
-# 停止
-docker-compose down
+# 检查健康状态
+curl http://localhost:3456/health
 ```
 
 服务端口：
-- **3456** - API Server + Webhook
-- **3000** - Web Dashboard
-- **5432** - PostgreSQL（仅本地访问）
-
-> **Docker 网络说明：** Server 容器已配置 `extra_hosts`，可通过 `host.docker.internal` 访问宿主机服务。如果你的 AI Agent 运行在宿主机上（如 OpenClaw），将 `AGENT_WEBHOOK_URL` 设为 `http://host.docker.internal:<port>`。
+- `3456` — API Server + Feishu Webhook
+- `3000` — Web Dashboard（默认密码：`adminrabbit`）
+- `5432` — PostgreSQL（仅本地访问）
 
 ### 4. 配置飞书
 
-1. 打开 [飞书开放平台](https://open.feishu.cn/app)
-2. 事件订阅 → 请求地址: `http://YOUR_SERVER:3456/webhook/event`
-3. 添加事件: `im.message.receive_v1`
-4. 开通权限: `bitable:app`, `im:message`
+1. 打开 [飞书开放平台](https://open.feishu.cn/app) → 选择你的应用
+2. **添加应用能力** → 机器人
+3. **事件订阅** → 请求 URL：`http://YOUR_SERVER:3456/webhook/event`
+4. **添加事件**：`im.message.receive_v1`
+5. **权限管理** → 开通以下权限：
+   - `im:message` — 发送/接收消息
+   - `im:message:send_as_bot` — 机器人发消息
+   - `contact:contact.base:readonly` — 获取用户姓名（需发布新版本生效）
+6. 发布应用版本
 
-### 5. 接入你的 AI Agent
+### 5. 接入 AI Agent
 
-**单 Agent 模式** — 一个 Rabbit Lark 实例绑定一个 AI Agent。
-
-**步骤 1：配置 Agent Webhook**
-
-在 `.env` 中设置你的 agent 接收消息的 endpoint：
-
-```env
-# Agent 接收消息的 webhook 地址
-AGENT_WEBHOOK_URL=https://your-agent.com/lark-webhook
-
-# 可选：共享密钥，用于验证消息签名
-AGENT_API_KEY=your_shared_secret
-
-# 本服务的公网地址（agent 回复时需要）
-API_BASE_URL=https://your-rabbit-server.com
-```
-
-当飞书用户发消息时，Rabbit 会 POST 到你的 `AGENT_WEBHOOK_URL`。
-
-**步骤 2：Agent 侧接收消息**
-
-你的 agent 会收到这样的 POST 请求：
+配置 `AGENT_WEBHOOK_URL` 为你的 Agent 接收端点。飞书消息会以如下格式 POST 过去：
 
 ```json
 {
   "source": { "bridge": "rabbit-lark-bot", "platform": "lark" },
-  "reply_via": {
-    "mcp": "rabbit-lark",
-    "api": "https://your-rabbit-server.com/api/agent/send"
-  },
+  "reply_via": { "api": "http://your-server:3456/api/agent/send" },
   "message_id": "om_xxx",
   "chat_id": "oc_xxx",
-  "user": { "id": "ou_xxx" },
+  "user": { "id": "ou_xxx", "role": "user", "allowedFeatures": ["cuiban_view"] },
   "content": { "type": "text", "text": "Hello!" }
 }
 ```
 
-**步骤 3：Agent 回复（两种方式）**
-
-**方式 A：使用 MCP（推荐，适用于 Claude/Clawdbot）**
+Agent 通过 `POST /api/agent/send` 回复：
 
 ```bash
-cd packages/mcp && npm install && npm link
-```
-
-在 Claude Desktop 或 Clawdbot 中配置：
-
-```json
-{
-  "mcpServers": {
-    "rabbit-lark": {
-      "command": "rabbit-lark-mcp",
-      "env": {
-        "RABBIT_LARK_API_URL": "https://your-rabbit-server.com",
-        "RABBIT_LARK_API_KEY": "your-api-key"
-      }
-    }
-  }
-}
-```
-
-Agent 调用 `rabbit_lark_send` 工具即可回复。
-
-**方式 B：直接调用 API**
-
-```bash
-curl -X POST https://your-rabbit-server.com/api/agent/send \
-  -H "Authorization: Bearer YOUR_API_KEY" \
+curl -X POST http://your-server:3456/api/agent/send \
   -H "Content-Type: application/json" \
-  -d '{"chat_id": "ou_xxx", "content": "Hello from AI!"}'
+  -d '{"chat_id": "oc_xxx", "content": "你好！"}'
 ```
 
-## API 接口
+---
 
-### Agent API（核心）
+## 催办任务系统
 
-| 端点 | 方法 | 描述 |
+### 飞书命令
+
+| 命令 | 权限 | 说明 |
 |------|------|------|
-| `/api/agent/status` | GET | 检查 agent 配置状态 |
-| `/api/agent/send` | POST | 发送消息到飞书 |
-| `/api/agent/reply` | POST | 回复特定消息 |
-| `/api/agent/react` | POST | 添加表情回应 |
-| `/api/agent/history` | GET | 获取消息历史 |
-| `/api/agent/user/:id` | GET | 获取用户信息 |
-| `/api/agent/schema` | GET | 获取消息格式文档 |
+| `我的任务` / `任务列表` | 全部用户 | 查看自己的待办任务 |
+| `完成 [任务名/序号]` | 全部用户 | 标记任务完成，可附上证明链接 |
+| `/add 任务名 邮箱/姓名 [日期]` | admin+ | 创建催办任务并通知执行人 |
 
-### 管理 API
+**示例：**
+```
+/add 提交季度报告 lisi@company.com 2026-03-31
+/add 更新文档 李四 2026-03-31
+完成 https://docs.example.com/proof
+```
 
-| 端点 | 方法 | 描述 |
-|------|------|------|
-| `/api/dashboard` | GET | Dashboard 统计 |
-| `/api/tasks` | GET/POST | 任务列表/创建 |
-| `/api/admins` | GET/POST | 管理员列表/添加 |
-| `/api/settings` | GET/PUT | 配置管理 |
-| `/api/audit` | GET | 审计日志 |
+### 通知逻辑
 
-## 用户权限
+```
+任务创建
+  └─→ 执行人收到：「你收到一个新的催办任务」
 
-### Admin（管理员）
-- 创建/删除任务
-- 查看所有任务
-- 管理其他管理员
-- 修改系统设置
+每 N 小时（reminder_interval_hours）
+  └─→ 执行人收到：「⏰ 催办提醒」（逾期时加 ⚠️ 标记）
 
-### User（普通用户）
-- 查看自己的待办任务
-- 完成任务并提交证明
+截止时间一到（一次性）
+  ├─→ 执行人收到：「🚨 任务已逾期，请尽快完成」
+  └─→ 报告对象收到：「📢 催办任务逾期通报」
 
-## 飞书机器人交互
+任务完成
+  └─→ 报告对象收到：「✅ 催办任务已完成 + 完成人 + 时间 + 证明」
+```
 
-**普通用户：**
-- 发送「任务」→ 查看待办
-- 发送「完成」或链接 → 完成任务
+### 通过管理后台创建任务
 
-**管理员：**
-- `/all` → 查看所有任务
-- `/pending` → 查看待办任务
+Web Dashboard → 催办任务 → 创建任务：
+
+| 字段 | 说明 |
+|------|------|
+| 任务名称 | 必填 |
+| 催办对象 | 从用户库搜索（姓名/邮箱），存 open_id |
+| 报告对象 | 可选，任务完成/逾期时收通知 |
+| 截止时间 | 可选，到期触发一次性逾期通报 |
+| 提醒间隔 | 小时数，0 = 关闭，默认 24 |
+| 备注 | 可选说明 |
+
+---
+
+## 权限系统
+
+### 角色
+
+| 角色 | 默认功能 |
+|------|---------|
+| `user` | `cuiban_view`、`cuiban_complete` |
+| `admin` | 以上 + `cuiban_create`、`history`、`user_manage` |
+| `superadmin` | 全部功能 |
+
+### 功能列表
+
+| Feature ID | 说明 |
+|-----------|------|
+| `cuiban_view` | 查看自己的催办任务 |
+| `cuiban_complete` | 完成催办任务 |
+| `cuiban_create` | 创建/发布催办任务 |
+| `history` | 查看历史消息 |
+| `user_manage` | 管理用户权限 |
+| `feature_manage` | 管理功能开关 |
+| `system_config` | 系统配置 |
+
+角色权限可在管理后台对每个用户单独覆盖。
+
+---
+
+## 用户注册
+
+用户第一次向机器人发送消息时自动注册：
+
+1. 飞书事件中提取 `open_id`、`union_id`
+2. 调用 Feishu Contact API（需 `contact:contact.base:readonly`）获取姓名
+3. 写入 `users` 表，角色默认 `user`
+
+**手动补全存量用户信息：**
+```bash
+DATABASE_URL=postgres://rabbit:password@localhost:5432/rabbit_lark \
+NODE_PATH=packages/server/node_modules \
+node scripts/enrich-users.js
+```
+
+---
+
+## 数据库 Schema
+
+| 表 | 用途 |
+|----|------|
+| `users` | 飞书用户，含角色和功能覆盖 |
+| `tasks` | 催办任务，含执行人/报告人/提醒设置 |
+| `user_sessions` | 多步交互会话（重启后恢复） |
+| `settings` | 系统配置 KV |
+| `audit_logs` | 操作审计日志 |
+| `admins` | 遗留表，向后兼容 |
+
+详见 [docs/architecture.md](docs/architecture.md)。
+
+---
 
 ## 开发
 
 ```bash
-# 只启动数据库
-docker-compose up -d postgres
+# 仅启动数据库
+docker compose up -d rabbit-lark-db
 
 # 本地开发 Server
 cd packages/server
 npm install
-DATABASE_URL=postgres://rabbit:xxx@localhost:5432/rabbit_lark npm run dev
+DATABASE_URL=postgres://rabbit:rabbit_secret_123@localhost:5432/rabbit_lark \
+npm run dev
 
 # 本地开发 Web
 cd packages/web
 npm install
-npm run dev
+npm run dev    # http://localhost:3000
 ```
 
-## 测试
-
+**测试：**
 ```bash
-# Server 测试
-cd packages/server
-npm test              # 运行测试
-npm run test:watch    # 监听模式
-npm run test:coverage # 生成覆盖率报告
-
-# Web 测试
-cd packages/web
-npm test
-
-# Lint
-npm run lint
-npm run lint:fix
+cd packages/server && npm test
 ```
 
-## CI/CD
-
-GitHub Actions 配置：
-
-- **CI** (`.github/workflows/ci.yml`)
-  - 推送到 main/develop 或 PR 时触发
-  - 运行 lint、test、build
-  - Docker 镜像构建验证
-
-- **Deploy** (`.github/workflows/deploy.yml`)
-  - 手动触发 (workflow_dispatch)
-  - 通过 SSH 部署到服务器
-  - 健康检查验证
-
-### 配置 Secrets
-
-在 GitHub 仓库 Settings → Secrets 添加：
-- `SSH_HOST` - 服务器 IP
-- `SSH_USER` - SSH 用户名
-- `SSH_PRIVATE_KEY` - SSH 私钥
-- `HEALTH_CHECK_URL` - 健康检查地址
-
-## 日志
-
-生产环境日志写入 `logs/YYYY-MM-DD.log`
-
-日志级别 (LOG_LEVEL): error, warn, info, debug
-
+**数据库迁移：**
 ```bash
-# 查看日志
-docker-compose logs -f server
-
-# 实时查看日志文件
-tail -f logs/$(date +%Y-%m-%d).log
+# 应用某个迁移文件
+docker exec rabbit-lark-db psql -U rabbit -d rabbit_lark \
+  -f /dev/stdin < db/migrations/007_add_deadline_notified_at.sql
 ```
+
+---
 
 ## 文档
 
-- [架构设计](docs/architecture.md) - 系统架构、数据流、部署
-- [API 文档](docs/api.md) - 完整 API 接口说明
-- [贡献指南](CONTRIBUTING.md) - 开发流程、代码规范
-- [更新日志](CHANGELOG.md) - 版本变更记录
+- [架构设计](docs/architecture.md) — 系统架构、数据库 Schema、数据流
+- [API 文档](docs/api.md) — 完整 REST API 说明
+- [更新日志](CHANGELOG.md)
 
 ## License
 
