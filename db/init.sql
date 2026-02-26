@@ -42,6 +42,22 @@ INSERT INTO settings (key, value, description) VALUES
     ('features', '{"cuiban": {"enabled": true}}', '功能开关')
 ON CONFLICT (key) DO NOTHING;
 
+-- 用户表（覆盖所有用户，包括管理员和普通用户）
+CREATE TABLE IF NOT EXISTS users (
+    id SERIAL PRIMARY KEY,
+    user_id VARCHAR(64) UNIQUE NOT NULL,     -- 飞书 user_id
+    open_id VARCHAR(64),                      -- 飞书 open_id
+    name VARCHAR(100),                        -- 显示名
+    email VARCHAR(255),                       -- 邮箱
+    role VARCHAR(20) NOT NULL DEFAULT 'user', -- superadmin / admin / user
+    configs JSONB NOT NULL DEFAULT '{}',      -- 每用户功能配置（覆盖默认值）
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_users_open_id ON users(open_id);
+CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
+
 -- 触发器：自动更新 updated_at
 CREATE OR REPLACE FUNCTION update_updated_at()
 RETURNS TRIGGER AS $$
@@ -58,5 +74,10 @@ CREATE TRIGGER admins_updated_at
 
 CREATE TRIGGER settings_updated_at
     BEFORE UPDATE ON settings
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at();
+
+CREATE TRIGGER users_updated_at
+    BEFORE UPDATE ON users
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at();

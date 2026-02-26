@@ -10,6 +10,7 @@ const { rateLimits } = require('./middleware/rateLimit');
 const webhookRoutes = require('./routes/webhook');
 const apiRoutes = require('./routes/api');
 const agentRoutes = require('./routes/agent');
+const userRoutes = require('./routes/users');
 
 // 验证环境变量
 validateEnv();
@@ -40,6 +41,7 @@ app.get('/health', async (req, res) => {
 app.use('/webhook', rateLimits.webhook, feishuWebhookAuth, webhookRoutes);
 app.use('/api', rateLimits.api, apiAuth, apiRoutes);
 app.use('/api/agent', rateLimits.api, apiAuth, agentRoutes);
+app.use('/api/users', rateLimits.api, apiAuth, userRoutes);
 
 // 404 handler
 app.use((req, res) => {

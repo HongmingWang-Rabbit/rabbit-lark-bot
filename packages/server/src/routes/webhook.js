@@ -3,6 +3,8 @@ const express = require('express');
 const router = express.Router();
 const feishu = require('../feishu/client');
 const { admins } = require('../db');
+const usersDb = require('../db/users');
+const { can } = require('../features');
 const reminderService = require('../services/reminder');
 const logger = require('../utils/logger');
 const agentForwarder = require('../services/agentForwarder');
@@ -132,12 +134,37 @@ router.post('/event', async (req, res) => {
       return res.json({ success: true });
     }
 
+    const chatId = event.message?.chat_id;
+    const openId = event.sender?.sender_id?.open_id;
+
+    // 自动注册用户（首次见到时创建记录）
+    let user = null;
+    if (senderId) {
+      try {
+        user = await usersDb.autoProvision({
+          userId: senderId,
+          openId,
+          name: null, // Feishu event doesn't carry display name; can be enriched later
+        });
+      } catch (provisionErr) {
+        logger.warn('User auto-provision failed', { senderId, error: provisionErr.message });
+      }
+    }
+
+    // 权限检查：ai_chat
+    if (user && !can(user, 'ai_chat')) {
+      logger.info('User lacks ai_chat permission, dropping message', { senderId });
+      if (chatId) {
+        feishu.sendMessage(chatId, '⚠️ 您暂无使用 AI 对话的权限，请联系管理员。', 'chat_id').catch(() => {});
+      }
+      return res.json({ success: true });
+    }
+
     // 转发给配置的 AI Agent（单 agent 模式）
     const apiBaseUrl = process.env.API_BASE_URL || `http://localhost:${process.env.PORT || 3456}`;
     agentForwarder.forwardToOwnerAgent(event, apiBaseUrl).catch(async (err) => {
       logger.error('Agent forwarding failed', { error: err.message });
       // 通知用户转发失败
-      const chatId = event.message?.chat_id;
       if (chatId) {
         try {
           await feishu.sendMessage(chatId, '⚠️ 消息处理失败，请稍后重试。', 'chat_id');
