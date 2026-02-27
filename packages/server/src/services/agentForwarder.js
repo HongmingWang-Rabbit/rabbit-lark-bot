@@ -61,53 +61,40 @@ async function appendHistory(chatId, role, content) {
 const TOOLS = [
   {
     name: 'list_tasks',
-    description: '获取用户的待办催办任务列表',
+    description: '获取某用户的待办催办任务列表（完成任务前必须先调用此工具获取 task_id）',
     input_schema: {
       type: 'object',
       properties: {
-        open_id: { type: 'string', description: '用户的飞书 open_id (ou_xxx)' },
+        open_id: { type: 'string', description: '用户的飞书 open_id (ou_xxx)，默认用当前用户' },
       },
       required: ['open_id'],
     },
   },
   {
     name: 'create_task',
-    description: '创建一个催办任务，并通过飞书 DM 通知被催办人',
+    description: '创建一个催办任务。创建成功后系统会自动通过飞书 DM 通知被催办人，无需再单独发消息。',
     input_schema: {
       type: 'object',
       properties: {
-        title:            { type: 'string', description: '任务标题' },
-        target_open_id:   { type: 'string', description: '被催办人的 open_id' },
-        reporter_open_id: { type: 'string', description: '创建人的 open_id（当前用户）' },
-        deadline:         { type: 'string', description: '截止日期 YYYY-MM-DD，可选' },
-        note:             { type: 'string', description: '备注，可选' },
+        title:            { type: 'string',  description: '任务标题（简洁描述要完成的事）' },
+        target_open_id:   { type: 'string',  description: '被催办人的 open_id（从注册用户列表取）' },
+        deadline:         { type: 'string',  description: '截止日期 YYYY-MM-DD，从用户话语中提取，今天/明天等要转成具体日期' },
+        note:             { type: 'string',  description: '备注说明，可选' },
+        reminder_interval_hours: { type: 'number', description: '提醒间隔小时数，默认 24' },
       },
-      required: ['title', 'target_open_id'],
+      required: ['title', 'target_open_id', 'deadline'],
     },
   },
   {
     name: 'complete_task',
-    description: '将一个任务标记为已完成',
+    description: '将任务标记为已完成。必须先调用 list_tasks 获取 task_id，再调用此工具。',
     input_schema: {
       type: 'object',
       properties: {
-        task_id:       { type: 'number', description: '任务 ID' },
-        user_open_id:  { type: 'string', description: '完成人的 open_id' },
-        proof:         { type: 'string', description: '完成证明链接，可选' },
+        task_id:      { type: 'number', description: '任务 ID（从 list_tasks 结果中获取）' },
+        proof:        { type: 'string', description: '完成证明链接或说明，可选' },
       },
-      required: ['task_id', 'user_open_id'],
-    },
-  },
-  {
-    name: 'send_message',
-    description: '向飞书会话发送一条消息（用于追问或通知）',
-    input_schema: {
-      type: 'object',
-      properties: {
-        chat_id: { type: 'string', description: '飞书 chat_id' },
-        content: { type: 'string', description: '消息内容（纯文本）' },
-      },
-      required: ['chat_id', 'content'],
+      required: ['task_id'],
     },
   },
 ];
@@ -128,6 +115,7 @@ async function executeTool(name, input, { userOpenId, chatId }) {
         id: t.id,
         title: t.title,
         deadline: t.deadline ? new Date(t.deadline).toISOString().slice(0, 10) : null,
+        status: t.status,
       })),
     };
   }
@@ -140,26 +128,28 @@ async function executeTool(name, input, { userOpenId, chatId }) {
       assigneeOpenId: input.target_open_id,
       assigneeName: targetUser?.name || null,
       deadline: input.deadline || null,
-      creatorId: input.reporter_open_id || userOpenId,
-      reporterOpenId: input.reporter_open_id || userOpenId,
+      note: input.note || null,
+      reminderIntervalHours: input.reminder_interval_hours || 24,
+      creatorId: userOpenId,
+      reporterOpenId: userOpenId,
     });
-    return { success: true, task_id: result?.id, message: `任务「${input.title}」已创建，已通知 ${targetUser?.name || input.target_open_id}` };
+    return {
+      success: true,
+      task_id: result?.id,
+      assignee_name: targetUser?.name || input.target_open_id,
+      message: `任务已创建，系统已通过飞书 DM 通知 ${targetUser?.name || input.target_open_id}`,
+    };
   }
 
   if (name === 'complete_task') {
     const completed = await reminderService.completeTask(
       input.task_id,
       input.proof || '',
-      input.user_open_id,
+      userOpenId,
       null
     );
     if (!completed) return { success: false, message: '任务不存在或已完成' };
-    return { success: true, message: '任务已完成' };
-  }
-
-  if (name === 'send_message') {
-    await feishu.sendMessage(input.chat_id, input.content, 'chat_id');
-    return { success: true };
+    return { success: true, message: '任务已标记为完成' };
   }
 
   return { error: `Unknown tool: ${name}` };
@@ -169,34 +159,49 @@ async function executeTool(name, input, { userOpenId, chatId }) {
 // System prompt builder
 // ---------------------------------------------------------------------------
 
-function buildSystemPrompt(userContext, registeredUsers, now = new Date()) {
-  const today = now.toISOString().slice(0, 10); // YYYY-MM-DD
+function buildSystemPrompt(userContext, registeredUsers, chatMeta = {}, now = new Date()) {
+  const today = now.toISOString().slice(0, 10);
   const todayLabel = now.toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', timeZone: 'Asia/Shanghai' });
+  const tomorrow = new Date(now.getTime() + 86400000).toISOString().slice(0, 10);
+
   const allowed = Object.entries(userContext?.allowedFeatures ?? {})
     .filter(([, v]) => v).map(([k]) => k);
 
   const userList = registeredUsers?.length
-    ? registeredUsers.map(u => `  - ${u.name ?? '(无名称)'} | ${u.email ?? '-'} | open_id: ${u.open_id ?? '-'}`).join('\n')
+    ? registeredUsers.map(u =>
+        `  - 姓名:${u.name ?? '(未知)'} | 邮箱:${u.email ?? '-'} | open_id:${u.open_id ?? '-'} | 角色:${u.role ?? '-'}`
+      ).join('\n')
     : '  (暂无注册用户)';
 
   return [
-    `你是一个飞书（Feishu/Lark）催办任务助手。你通过工具调用来管理任务，用中文与用户交流。`,
-    `今天是 ${todayLabel}（${today}）。处理截止日期时：今天=${today}，明天=${new Date(now.getTime()+86400000).toISOString().slice(0,10)}，以此类推。`,
+    '你是一个飞书（Feishu/Lark）催办任务助手，负责帮助用户创建、查看和完成催办任务。通过工具调用执行操作，用中文与用户交流。',
     '',
-    '## 当前用户',
-    `姓名: ${userContext?.name ?? '未知'} | open_id: ${userContext?.openId ?? '未知'}`,
+    `## 时间`,
+    `今天: ${todayLabel}（${today}）`,
+    `明天: ${tomorrow}`,
+    `处理「今天/明天/后天/本周五」等相对日期时，转换成上方对应的 YYYY-MM-DD 格式。`,
+    '',
+    '## 当前用户（发消息的人）',
+    `姓名: ${userContext?.name ?? '未知'}`,
+    `open_id: ${userContext?.openId ?? '未知'}（这是 reporter_open_id，也是当前用户自己的任务归属 ID）`,
+    `角色: ${userContext?.role ?? 'user'}`,
     `已开通功能: ${allowed.join(', ') || '无'}`,
     '',
-    '## 系统注册用户',
+    '## 会话信息',
+    `chat_id: ${chatMeta.chatId ?? '未知'}`,
+    `会话类型: ${chatMeta.chatType === 'group' ? '群聊' : '私聊'}`,
+    '',
+    '## 系统注册用户（可被催办的人）',
     userList,
     '',
-    '## 规则',
-    '- 处理任务时必须使用工具，不要直接在文字里说"我已创建"',
-    '- target_open_id 必须从上方注册用户里取，不能编造',
-    '- 名字不完全匹配时先用 send_message 追问确认，再执行操作',
-    '- 找不到用户时告知对方先发一条飞书消息完成注册',
-    '- 回复简洁友好，用中文',
-    `- 权限检查：cuiban_view(查任务) cuiban_complete(完成任务) cuiban_create(创建任务)，没有权限直接告知`,
+    '## 工具使用规则',
+    '- **create_task**: 创建后系统自动 DM 通知被催办人，无需额外发消息',
+    '- **complete_task**: 必须先调 list_tasks 获取 task_id，再调此工具',
+    '- **target_open_id**: 只能使用注册用户里的 open_id，不能编造',
+    '- 名字不完全匹配（如「王鸿铭」vs「王泓铭」）时，先在回复中询问确认，再执行操作',
+    '- 找不到用户时，告知对方让其先给机器人发一条消息完成注册',
+    '- 没有对应权限时直接告知（cuiban_view=查任务 cuiban_complete=完成 cuiban_create=创建）',
+    '- 操作成功后，用简洁友好的中文告知用户结果，不要重复工具返回的 JSON',
   ].join('\n');
 }
 
@@ -244,7 +249,8 @@ async function forwardToOwnerAgent(event, apiBaseUrl, userContext = null) {
     allowedFeatures: userContext.resolvedFeatures ?? {},
   } : null;
 
-  const systemPrompt = buildSystemPrompt(uc, registeredUsers);
+  const chatMeta = { chatId, chatType: message.chat_type ?? 'p2p' };
+  const systemPrompt = buildSystemPrompt(uc, registeredUsers, chatMeta);
 
   // Load history
   const history = await getHistory(chatId).catch(() => []);
