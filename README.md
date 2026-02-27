@@ -216,14 +216,16 @@ curl -X POST https://your-domain.com/api/agent/send \
 | 命令 | 权限 | 说明 |
 |------|------|------|
 | `我的任务` / `任务列表` | 全部用户 | 查看自己的待办任务 |
-| `完成 [任务名/序号]` | 全部用户 | 标记任务完成，可附上证明链接 |
+| `完成 [任务名/序号]` / `[任务名] 完成了` | 全部用户 | 标记任务完成，可附上证明链接 |
 | `/add 任务名 邮箱/姓名 [日期]` | admin+ | 创建催办任务并通知执行人 |
 
 **示例：**
 ```
 /add 提交季度报告 lisi@company.com 2026-03-31
 /add 更新文档 李四 2026-03-31
-完成 https://docs.example.com/proof
+完成 提交季度报告 https://docs.example.com/proof
+提交季度报告 任务完成
+完成 1
 ```
 
 ### 通知逻辑
@@ -358,6 +360,7 @@ docker exec rabbit-lark-db psql -U rabbit -d rabbit_lark \
 | `/api/agent/send` 401 | `AGENT_API_KEY` 与 `rabbitApiKey` 不一致 | 两边设为同一个值并重启 |
 | 改了 `.env` 没生效 | `docker compose restart` 不重读 `.env` | 改用 `docker compose up -d` |
 | 用户名为空 | 飞书 Contact API 权限未开通 | 添加权限并发布新版本 |
+| 「test 任务完成」被 AI 当普通消息 | 已修复，正向/自然语言格式均支持 | 升级到最新版本 |
 
 详见 [docs/troubleshooting.md](docs/troubleshooting.md)。
 
