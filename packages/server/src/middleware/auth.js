@@ -147,9 +147,49 @@ async function requireAdmin(req, res, next) {
   }
 }
 
+/**
+ * Agent callback authentication middleware
+ * Validates requests from OpenClaw agent using AGENT_API_KEY.
+ * Falls back to API_KEY if AGENT_API_KEY is not separately configured.
+ */
+async function agentAuth(req, res, next) {
+  try {
+    const expectedKey = process.env.AGENT_API_KEY || process.env.API_KEY;
+    if (!expectedKey) {
+      logger.warn('AGENT_API_KEY not set, agent endpoint unprotected');
+      return next();
+    }
+
+    const authHeader = req.headers.authorization;
+    const apiKeyHeader = req.headers['x-api-key'];
+
+    const token = apiKeyHeader
+      || authHeader?.replace(/^Bearer\s+/i, '');
+
+    if (!token) {
+      logger.warn('Agent auth: missing credentials', { path: req.path });
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const expectedHash = crypto.createHash('sha256').update(expectedKey).digest();
+    const tokenHash = crypto.createHash('sha256').update(token).digest();
+
+    if (expectedHash.length === tokenHash.length && crypto.timingSafeEqual(tokenHash, expectedHash)) {
+      return next();
+    }
+
+    logger.warn('Agent auth: invalid credentials', { path: req.path, ip: req.ip });
+    return res.status(401).json({ error: 'Unauthorized' });
+  } catch (err) {
+    logger.error('Agent auth middleware error', { error: err.message });
+    return res.status(500).json({ error: 'Authentication error' });
+  }
+}
+
 module.exports = {
   verifyFeishuSignature,
   feishuWebhookAuth,
   apiAuth,
+  agentAuth,
   requireAdmin,
 };

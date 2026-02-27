@@ -5,7 +5,7 @@ const cors = require('cors');
 const { pool } = require('./db');
 const logger = require('./utils/logger');
 const { validateEnv } = require('./utils/validateEnv');
-const { apiAuth, feishuWebhookAuth } = require('./middleware/auth');
+const { apiAuth, agentAuth, feishuWebhookAuth } = require('./middleware/auth');
 const { rateLimits, limiter } = require('./middleware/rateLimit');
 const webhookRoutes = require('./routes/webhook');
 const apiRoutes = require('./routes/api');
@@ -47,7 +47,9 @@ app.get('/health', async (req, res) => {
 
 // Routes with middleware
 app.use('/webhook', rateLimits.webhook, feishuWebhookAuth, webhookRoutes);
-apiRoutes.use('/agent', agentRoutes);
+// Agent routes use AGENT_API_KEY auth (separate from web API_KEY)
+// Must be registered before /api to take precedence
+app.use('/api/agent', rateLimits.api, agentAuth, agentRoutes);
 apiRoutes.use('/users', userRoutes);
 app.use('/api', rateLimits.api, apiAuth, apiRoutes);
 
