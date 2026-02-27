@@ -8,6 +8,8 @@
 const express = require('express');
 const router = express.Router();
 const feishu = require('../feishu/client');
+const reminderService = require('../services/reminder');
+const usersDb = require('../db/users');
 const logger = require('../utils/logger');
 const agentForwarder = require('../services/agentForwarder');
 const { safeErrorMessage } = require('../utils/safeError');
@@ -159,6 +161,92 @@ router.get('/status', (req, res) => {
     // 不暴露完整 URL，只显示是否配置
     webhook_configured: !!config?.webhookUrl,
   });
+});
+
+// ── Task management (for MCP tool calls) ─────────────────────────────────────
+
+/**
+ * GET /api/agent/tasks?open_id=ou_xxx
+ * List pending tasks for a user (by open_id)
+ */
+router.get('/tasks', async (req, res) => {
+  try {
+    const { open_id } = req.query;
+    if (!open_id) return res.status(400).json({ error: 'open_id is required' });
+
+    // Resolve feishu_user_id from DB (tasks may be indexed by either)
+    const user = await usersDb.findByOpenId(open_id);
+    const feishuUserId = user?.feishu_user_id || null;
+
+    const tasks = await reminderService.getUserPendingTasks(feishuUserId, open_id);
+    res.json({ success: true, tasks });
+  } catch (err) {
+    logger.error('Agent list tasks failed', { error: err.message });
+    res.status(500).json({ error: safeErrorMessage(err) });
+  }
+});
+
+/**
+ * POST /api/agent/tasks/:id/complete
+ * Complete a task on behalf of the user
+ */
+router.post('/tasks/:id/complete', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: 'Invalid task ID' });
+
+    const { proof, user_open_id } = req.body;
+
+    // Resolve actor info for audit + completion name
+    let completerName = null;
+    let feishuUserId = null;
+    if (user_open_id) {
+      const user = await usersDb.findByOpenId(user_open_id).catch(() => null);
+      completerName = user?.name || user?.email || null;
+      feishuUserId = user?.feishu_user_id || user_open_id;
+    }
+
+    const task = await reminderService.completeTask(id, proof || '', feishuUserId || 'agent', completerName);
+    if (!task) return res.status(404).json({ error: '任务不存在或已完成' });
+
+    res.json({ success: true, task });
+  } catch (err) {
+    logger.error('Agent complete task failed', { error: err.message });
+    res.status(500).json({ error: safeErrorMessage(err) });
+  }
+});
+
+/**
+ * POST /api/agent/tasks
+ * Create a task (AI-driven, target by open_id)
+ */
+router.post('/tasks', async (req, res) => {
+  try {
+    const { title, target_open_id, reporter_open_id, deadline, note } = req.body;
+    if (!title || !target_open_id) {
+      return res.status(400).json({ error: 'title and target_open_id are required' });
+    }
+
+    const targetUser = await usersDb.findByOpenId(target_open_id);
+    if (!targetUser) {
+      return res.status(400).json({ error: `User not found for open_id: ${target_open_id}` });
+    }
+
+    const task = await reminderService.createTask({
+      title,
+      assigneeId: targetUser.feishu_user_id || target_open_id,
+      assigneeOpenId: target_open_id,
+      assigneeName: targetUser.name || null,
+      deadline: deadline || null,
+      note: note || null,
+      reporterOpenId: reporter_open_id || null,
+    });
+
+    res.json({ success: true, task });
+  } catch (err) {
+    logger.error('Agent create task failed', { error: err.message });
+    res.status(500).json({ error: safeErrorMessage(err) });
+  }
 });
 
 /**

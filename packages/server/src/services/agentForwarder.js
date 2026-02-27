@@ -206,6 +206,7 @@ async function forwardToOwnerAgent(event, apiBaseUrl, userContext = null) {
   if (userContext) {
     message.userContext = {
       userId: userContext.user_id,
+      openId: userContext.open_id,          // needed for MCP task tool calls
       name: userContext.name,
       role: userContext.role,
       allowedFeatures: userContext.resolvedFeatures ?? {},

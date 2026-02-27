@@ -63,6 +63,7 @@ interface RabbitLarkContent {
 
 interface RabbitLarkUserContext {
   userId?: string;
+  openId?: string;
   name?: string;
   role?: string;
   allowedFeatures?: Record<string, boolean>;
@@ -181,10 +182,11 @@ async function processInbound(payload: RabbitLarkPayload, rawBody: string): Prom
       .filter(([, v]) => !v)
       .map(([k]) => k);
     const permissionNote = [
-      `[User: ${uc.name ?? uc.userId ?? "unknown"} | Role: ${uc.role ?? "user"}]`,
+      `[User: ${uc.name ?? uc.userId ?? "unknown"} | Role: ${uc.role ?? "user"} | open_id: ${uc.openId ?? "unknown"}]`,
       allowed.length ? `Allowed features: ${allowed.join(", ")}` : "Allowed features: none",
       denied.length ? `Denied features: ${denied.join(", ")}` : "",
       "IMPORTANT: Only respond to requests that use the user's allowed features. Politely refuse anything outside their allowed scope.",
+      uc.openId ? `To list or complete tasks for this user, use their open_id: ${uc.openId}` : "",
     ]
       .filter(Boolean)
       .join("\n");

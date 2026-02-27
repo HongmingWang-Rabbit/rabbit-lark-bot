@@ -175,6 +175,77 @@ const TOOLS = [
       required: ['user_id'],
     },
   },
+
+  // ── Task management tools ─────────────────────────────────────────────────
+
+  {
+    name: 'rabbit_lark_list_tasks',
+    description: 'List pending tasks assigned to a Lark user. Use this when the user asks to see their tasks or when you need to find a task by name before completing it.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        open_id: {
+          type: 'string',
+          description: 'The Lark open_id (ou_xxx) of the user whose tasks to list. Use the open_id from the current user context.',
+        },
+      },
+      required: ['open_id'],
+    },
+  },
+
+  {
+    name: 'rabbit_lark_complete_task',
+    description: 'Mark a task as completed. Use this when the user indicates they have finished a task (e.g. "test 任务完成", "完成了", "done"). First call rabbit_lark_list_tasks to find the task ID if you only have a name.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        task_id: {
+          type: 'number',
+          description: 'The numeric task ID to complete.',
+        },
+        proof: {
+          type: 'string',
+          description: 'Optional proof URL or description of completion.',
+        },
+        user_open_id: {
+          type: 'string',
+          description: 'The open_id of the user completing the task (for audit log).',
+        },
+      },
+      required: ['task_id'],
+    },
+  },
+
+  {
+    name: 'rabbit_lark_create_task',
+    description: 'Create a new reminder task and notify the assignee. Use when the user asks to create or assign a task to someone.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        title: {
+          type: 'string',
+          description: 'Task title / name.',
+        },
+        target_open_id: {
+          type: 'string',
+          description: 'The open_id (ou_xxx) of the user to assign the task to.',
+        },
+        reporter_open_id: {
+          type: 'string',
+          description: 'Optional open_id of the user to notify when the task is completed.',
+        },
+        deadline: {
+          type: 'string',
+          description: 'Optional deadline in YYYY-MM-DD format.',
+        },
+        note: {
+          type: 'string',
+          description: 'Optional additional notes.',
+        },
+      },
+      required: ['title', 'target_open_id'],
+    },
+  },
 ];
 
 // Tool handlers
@@ -214,6 +285,30 @@ const toolHandlers = {
 
   async rabbit_lark_get_user({ user_id }) {
     const result = await apiRequest(`/api/agent/user/${user_id}`);
+    return result;
+  },
+
+  async rabbit_lark_list_tasks({ open_id }) {
+    const result = await apiRequest(`/api/agent/tasks?open_id=${encodeURIComponent(open_id)}`);
+    return result;
+  },
+
+  async rabbit_lark_complete_task({ task_id, proof, user_open_id }) {
+    const result = await apiRequest(`/api/agent/tasks/${task_id}/complete`, 'POST', {
+      proof: proof || '',
+      user_open_id: user_open_id || '',
+    });
+    return result;
+  },
+
+  async rabbit_lark_create_task({ title, target_open_id, reporter_open_id, deadline, note }) {
+    const result = await apiRequest('/api/agent/tasks', 'POST', {
+      title,
+      target_open_id,
+      reporter_open_id: reporter_open_id || null,
+      deadline: deadline || null,
+      note: note || null,
+    });
     return result;
   },
 };
