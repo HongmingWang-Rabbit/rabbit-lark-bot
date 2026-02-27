@@ -1,259 +1,335 @@
 /**
- * Agent Forwarder Service
- * 
- * Forwards incoming Lark messages to the configured AI agent via webhook.
- * Single-agent mode: one Rabbit Lark instance = one AI agent owner.
- * 
- * Configure via environment:
- *   AGENT_WEBHOOK_URL - The agent's webhook endpoint
- *   AGENT_API_KEY - Shared secret for signing (optional)
+ * Agent Forwarder — Direct Anthropic API with tool calling
+ *
+ * Replaces the OpenClaw agent forwarding with a direct call to Anthropic.
+ * Claude gets tool definitions and calls them; this service executes them.
+ *
+ * Tools:
+ *   list_tasks      — get pending tasks for a user
+ *   create_task     — create a task and notify the assignee via Feishu DM
+ *   complete_task   — mark a task as done
+ *   send_message    — send a text reply to the Feishu chat
  */
 
-const crypto = require('crypto');
+const Anthropic = require('@anthropic-ai/sdk');
 const logger = require('../utils/logger');
+const { pool } = require('../db/index');
+const reminderService = require('./reminder');
 const usersDb = require('../db/users');
+const feishu = require('../feishu/client');
 
-/**
- * Standard message format sent to agents
- * @typedef {Object} AgentMessage
- * @property {Object} source - Message source info
- * @property {string} source.bridge - "rabbit-lark-bot"
- * @property {string} source.platform - "lark"
- * @property {string} source.version - Bridge version
- * @property {string[]} source.capabilities - Supported features
- * @property {Object} reply_via - How to reply
- * @property {string} reply_via.mcp - MCP server name
- * @property {string} reply_via.api - Direct API endpoint
- * @property {string} event - Event type (message, reaction, etc.)
- * @property {string} message_id - Lark message ID
- * @property {string} chat_id - Lark chat ID
- * @property {Object} user - Sender info
- * @property {Object} content - Message content
- * @property {number} timestamp - Unix timestamp
- */
+const MODEL = 'claude-haiku-4-5';
+const MAX_HISTORY = 20;        // messages per chat to keep
+const MAX_TOOL_ROUNDS = 5;     // prevent infinite loops
 
-const BRIDGE_VERSION = '1.0.0';
-const CAPABILITIES = ['text', 'image', 'file', 'reply', 'reaction', 'interactive'];
+// ---------------------------------------------------------------------------
+// Conversation history (PostgreSQL)
+// ---------------------------------------------------------------------------
 
-/**
- * Format a Lark event into standard agent message format
- * @param {Object} event - Raw Lark event
- * @param {string} apiBaseUrl - Base URL of this server
- * @returns {AgentMessage}
- */
-function formatForAgent(event, apiBaseUrl) {
-  const message = event.message || {};
-  const sender = event.sender || {};
+async function getHistory(chatId) {
   
-  // Parse content based on message type
-  let content = {};
-  try {
-    const rawContent = JSON.parse(message.content || '{}');
-    content = {
-      type: message.message_type || 'text',
-      text: rawContent.text || '',
-      ...rawContent,
+  const { rows } = await pool.query(
+    `SELECT role, content FROM conversation_history
+     WHERE chat_id = $1
+     ORDER BY created_at DESC LIMIT $2`,
+    [chatId, MAX_HISTORY]
+  );
+  return rows.reverse().map(r => ({ role: r.role, content: r.content }));
+}
+
+async function appendHistory(chatId, role, content) {
+  
+  await pool.query(
+    `INSERT INTO conversation_history (chat_id, role, content) VALUES ($1, $2, $3)`,
+    [chatId, role, JSON.stringify(content)]
+  );
+  // Prune old messages beyond limit
+  await pool.query(
+    `DELETE FROM conversation_history
+     WHERE chat_id = $1 AND id NOT IN (
+       SELECT id FROM conversation_history WHERE chat_id = $1
+       ORDER BY created_at DESC LIMIT $2
+     )`,
+    [chatId, MAX_HISTORY]
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Tool definitions
+// ---------------------------------------------------------------------------
+
+const TOOLS = [
+  {
+    name: 'list_tasks',
+    description: '获取用户的待办催办任务列表',
+    input_schema: {
+      type: 'object',
+      properties: {
+        open_id: { type: 'string', description: '用户的飞书 open_id (ou_xxx)' },
+      },
+      required: ['open_id'],
+    },
+  },
+  {
+    name: 'create_task',
+    description: '创建一个催办任务，并通过飞书 DM 通知被催办人',
+    input_schema: {
+      type: 'object',
+      properties: {
+        title:            { type: 'string', description: '任务标题' },
+        target_open_id:   { type: 'string', description: '被催办人的 open_id' },
+        reporter_open_id: { type: 'string', description: '创建人的 open_id（当前用户）' },
+        deadline:         { type: 'string', description: '截止日期 YYYY-MM-DD，可选' },
+        note:             { type: 'string', description: '备注，可选' },
+      },
+      required: ['title', 'target_open_id'],
+    },
+  },
+  {
+    name: 'complete_task',
+    description: '将一个任务标记为已完成',
+    input_schema: {
+      type: 'object',
+      properties: {
+        task_id:       { type: 'number', description: '任务 ID' },
+        user_open_id:  { type: 'string', description: '完成人的 open_id' },
+        proof:         { type: 'string', description: '完成证明链接，可选' },
+      },
+      required: ['task_id', 'user_open_id'],
+    },
+  },
+  {
+    name: 'send_message',
+    description: '向飞书会话发送一条消息（用于追问或通知）',
+    input_schema: {
+      type: 'object',
+      properties: {
+        chat_id: { type: 'string', description: '飞书 chat_id' },
+        content: { type: 'string', description: '消息内容（纯文本）' },
+      },
+      required: ['chat_id', 'content'],
+    },
+  },
+];
+
+// ---------------------------------------------------------------------------
+// Tool executor
+// ---------------------------------------------------------------------------
+
+async function executeTool(name, input, { userOpenId, chatId }) {
+  logger.info('🔧 Executing tool', { tool: name, input });
+
+  if (name === 'list_tasks') {
+    const oid = input.open_id || userOpenId;
+    const tasks = await reminderService.getUserPendingTasks(oid, oid);
+    if (!tasks.length) return { tasks: [], message: '没有待办任务' };
+    return {
+      tasks: tasks.map(t => ({
+        id: t.id,
+        title: t.title,
+        deadline: t.deadline ? new Date(t.deadline).toISOString().slice(0, 10) : null,
+      })),
     };
-  } catch (parseErr) {
-    logger.debug('Failed to parse message content as JSON', { error: parseErr.message });
-    content = { type: 'text', text: message.content || '' };
   }
-  
-  return {
-    source: {
-      bridge: 'rabbit-lark-bot',
-      platform: 'lark',
-      version: BRIDGE_VERSION,
-      capabilities: CAPABILITIES,
-    },
-    reply_via: {
-      mcp: 'rabbit-lark',
-      api: `${apiBaseUrl}/api/agent/send`,
-    },
-    event: 'message',
-    message_id: message.message_id,
-    chat_id: message.chat_id,
-    chat_type: message.chat_type, // p2p or group
-    user: {
-      id: sender.sender_id?.user_id || sender.sender_id?.open_id,
-      open_id: sender.sender_id?.open_id,
-      union_id: sender.sender_id?.union_id,
-      type: sender.sender_type, // user or bot
-    },
-    content,
-    timestamp: parseInt(message.create_time) || Date.now(),
-  };
-}
 
-/**
- * Forward message to a registered agent
- * @param {string} webhookUrl - Agent's webhook URL
- * @param {AgentMessage} message - Formatted message
- * @param {Object} options - Additional options
- * @returns {Promise<Object>} Response from agent
- */
-async function forwardToAgent(webhookUrl, message, options = {}) {
-  const { apiKey, timeout = 30000 } = options;
-  
-  const headers = {
-    'Content-Type': 'application/json',
-    'X-Rabbit-Lark-Signature': generateSignature(message, apiKey),
-  };
-  
-  if (apiKey) {
-    headers['Authorization'] = `Bearer ${apiKey}`;
-  }
-  
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeout);
-  // Redact URL to avoid leaking embedded credentials in logs
-  const redactedUrl = new URL(webhookUrl).origin + new URL(webhookUrl).pathname;
-
-  try {
-    logger.info('Forwarding to agent', {
-      webhookUrl: redactedUrl,
-      messageId: message.message_id,
-      chatId: message.chat_id,
+  if (name === 'create_task') {
+    const targetUser = await usersDb.findByOpenId(input.target_open_id);
+    const result = await reminderService.createTask({
+      title: input.title,
+      assigneeId: input.target_open_id,
+      assigneeOpenId: input.target_open_id,
+      assigneeName: targetUser?.name || null,
+      deadline: input.deadline || null,
+      creatorId: input.reporter_open_id || userOpenId,
+      reporterOpenId: input.reporter_open_id || userOpenId,
     });
-    
-    const response = await fetch(webhookUrl, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(message),
-      signal: controller.signal,
-    });
-    
-    clearTimeout(timeoutId);
-    
-    if (!response.ok) {
-      const error = await response.text().catch(() => 'unknown');
-      throw new Error(`Agent returned ${response.status}: ${error.slice(0, 500)}`);
-    }
-    
-    const result = await response.json();
-    logger.info('Agent responded', { webhookUrl: redactedUrl, success: true });
-    return result;
-  } catch (err) {
-    clearTimeout(timeoutId);
-    
-    if (err.name === 'AbortError') {
-      logger.warn('Agent timeout', { webhookUrl: redactedUrl, timeout });
-      throw new Error('Agent request timeout');
-    }
-    
-    logger.error('Forward to agent failed', { webhookUrl: redactedUrl, error: err.message });
-    throw err;
+    return { success: true, task_id: result?.id, message: `任务「${input.title}」已创建，已通知 ${targetUser?.name || input.target_open_id}` };
   }
-}
 
-/**
- * Generate HMAC signature for webhook verification
- * @param {Object} payload - Message payload
- * @param {string} secret - Shared secret
- * @returns {string} HMAC signature
- */
-function generateSignature(payload, secret) {
-  if (!secret) return '';
-  
-  const hmac = crypto.createHmac('sha256', secret);
-  hmac.update(JSON.stringify(payload));
-  return hmac.digest('hex');
-}
-
-// ============ Single Agent Mode ============
-
-/**
- * Get agent configuration from environment
- * @returns {Object|null}
- */
-function getAgentConfig() {
-  const webhookUrl = process.env.AGENT_WEBHOOK_URL;
-  if (!webhookUrl) {
-    return null;
+  if (name === 'complete_task') {
+    const completed = await reminderService.completeTask(
+      input.task_id,
+      input.proof || '',
+      input.user_open_id,
+      null
+    );
+    if (!completed) return { success: false, message: '任务不存在或已完成' };
+    return { success: true, message: '任务已完成' };
   }
-  
-  return {
-    webhookUrl,
-    apiKey: process.env.AGENT_API_KEY || '',
-    timeout: parseInt(process.env.AGENT_TIMEOUT_MS) || 30000,
-  };
+
+  if (name === 'send_message') {
+    await feishu.sendMessage(input.chat_id, input.content, 'chat_id');
+    return { success: true };
+  }
+
+  return { error: `Unknown tool: ${name}` };
 }
 
-/**
- * Check if agent is configured
- * @returns {boolean}
- */
-function isAgentConfigured() {
-  return !!process.env.AGENT_WEBHOOK_URL;
+// ---------------------------------------------------------------------------
+// System prompt builder
+// ---------------------------------------------------------------------------
+
+function buildSystemPrompt(userContext, registeredUsers) {
+  const allowed = Object.entries(userContext?.allowedFeatures ?? {})
+    .filter(([, v]) => v).map(([k]) => k);
+
+  const userList = registeredUsers?.length
+    ? registeredUsers.map(u => `  - ${u.name ?? '(无名称)'} | ${u.email ?? '-'} | open_id: ${u.open_id ?? '-'}`).join('\n')
+    : '  (暂无注册用户)';
+
+  return [
+    '你是一个飞书（Feishu/Lark）催办任务助手。你通过工具调用来管理任务，用中文与用户交流。',
+    '',
+    '## 当前用户',
+    `姓名: ${userContext?.name ?? '未知'} | open_id: ${userContext?.openId ?? '未知'}`,
+    `已开通功能: ${allowed.join(', ') || '无'}`,
+    '',
+    '## 系统注册用户',
+    userList,
+    '',
+    '## 规则',
+    '- 处理任务时必须使用工具，不要直接在文字里说"我已创建"',
+    '- target_open_id 必须从上方注册用户里取，不能编造',
+    '- 名字不完全匹配时先用 send_message 追问确认，再执行操作',
+    '- 找不到用户时告知对方先发一条飞书消息完成注册',
+    '- 回复简洁友好，用中文',
+    `- 权限检查：cuiban_view(查任务) cuiban_complete(完成任务) cuiban_create(创建任务)，没有权限直接告知`,
+  ].join('\n');
 }
 
-/**
- * Forward message to the configured agent
- * @param {Object} event - Raw Lark event
- * @param {string} apiBaseUrl - This server's base URL
- * @param {Object} [userContext] - User record with resolved features
- */
+// ---------------------------------------------------------------------------
+// Main: forwardToOwnerAgent
+// ---------------------------------------------------------------------------
+
 async function forwardToOwnerAgent(event, apiBaseUrl, userContext = null) {
-  const config = getAgentConfig();
-  
-  if (!config) {
-    logger.debug('No agent configured (AGENT_WEBHOOK_URL not set), skipping forward');
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    logger.warn('ANTHROPIC_API_KEY not set, skipping agent forward');
     return null;
   }
-  
-  const message = formatForAgent(event, apiBaseUrl);
 
-  // Attach user context so the agent knows what this user is allowed to do
-  if (userContext) {
-    message.userContext = {
-      userId: userContext.user_id,
-      openId: userContext.open_id,
-      name: userContext.name,
-      role: userContext.role,
-      allowedFeatures: userContext.resolvedFeatures ?? {},
-    };
-  }
+  const message = event.message || {};
+  const sender  = event.sender  || {};
+  const chatId  = message.chat_id;
+  const openId  = sender.sender_id?.open_id || userContext?.open_id;
 
-  // Attach registered users list so the agent can resolve names to open_ids
-  // without needing to make exec/curl calls
+  let text = '';
   try {
-    const allUsers = await usersDb.list({ limit: 100 });
-    message.registeredUsers = allUsers.map(u => ({
-      name: u.name || null,
-      email: u.email || null,
-      open_id: u.open_id || null,
-      feishu_user_id: u.feishu_user_id || null,
-    })).filter(u => u.open_id || u.feishu_user_id);
-  } catch (err) {
-    logger.debug('Could not fetch users for agent context', { error: err.message });
-    message.registeredUsers = [];
+    const raw = JSON.parse(message.content || '{}');
+    text = raw.text || message.content || '';
+  } catch {
+    text = message.content || '';
   }
-  
-  // Redact URL to avoid leaking embedded credentials in logs
-  const redactedUrl = new URL(config.webhookUrl).origin + new URL(config.webhookUrl).pathname;
 
-  try {
-    const result = await forwardToAgent(config.webhookUrl, message, {
-      apiKey: config.apiKey,
-      timeout: config.timeout,
-    });
-    return result;
-  } catch (err) {
-    logger.error('Failed to forward to owner agent', {
-      error: err.message,
-      webhookUrl: redactedUrl,
-    });
-    throw err;
+  if (!text || !chatId) {
+    logger.warn('Missing text or chatId, skipping');
+    return null;
   }
+
+  // Build registered users list
+  let registeredUsers = [];
+  try {
+    registeredUsers = await usersDb.list({ limit: 100 });
+  } catch (e) {
+    logger.debug('Could not fetch users', { error: e.message });
+  }
+
+  const uc = userContext ? {
+    name: userContext.name,
+    openId: userContext.open_id,
+    role: userContext.role,
+    allowedFeatures: userContext.resolvedFeatures ?? {},
+  } : null;
+
+  const systemPrompt = buildSystemPrompt(uc, registeredUsers);
+
+  // Load history
+  const history = await getHistory(chatId).catch(() => []);
+
+  // Append current user message
+  const userMsg = { role: 'user', content: text };
+  await appendHistory(chatId, 'user', text).catch(() => {});
+
+  const client = new Anthropic({ apiKey });
+  const messages = [...history, userMsg];
+
+  // Agentic loop
+  let rounds = 0;
+  let finalText = '';
+
+  while (rounds < MAX_TOOL_ROUNDS) {
+    rounds++;
+
+    let response;
+    try {
+      response = await client.messages.create({
+        model: MODEL,
+        max_tokens: 1024,
+        system: systemPrompt,
+        tools: TOOLS,
+        messages,
+      });
+    } catch (err) {
+      logger.error('Anthropic API error', { error: err.message });
+      await feishu.sendMessage(chatId, '⚠️ AI 服务暂时不可用，请稍后重试', 'chat_id');
+      return null;
+    }
+
+    // Collect text from this response
+    const textBlocks = response.content.filter(b => b.type === 'text').map(b => b.text).join('');
+    if (textBlocks) finalText = textBlocks;
+
+    // If no tool use, we're done
+    if (response.stop_reason === 'end_turn') {
+      break;
+    }
+
+    // Process tool calls
+    const toolUses = response.content.filter(b => b.type === 'tool_use');
+    if (!toolUses.length) break;
+
+    // Add assistant message to history
+    messages.push({ role: 'assistant', content: response.content });
+
+    // Execute all tools and collect results
+    const toolResults = [];
+    for (const tu of toolUses) {
+      const result = await executeTool(tu.name, tu.input, {
+        userOpenId: uc?.openId || openId,
+        chatId,
+      }).catch(err => ({ error: err.message }));
+
+      logger.info('🔧 Tool result', { tool: tu.name, result });
+      toolResults.push({
+        type: 'tool_result',
+        tool_use_id: tu.id,
+        content: JSON.stringify(result),
+      });
+    }
+
+    // Add tool results to messages and loop
+    messages.push({ role: 'user', content: toolResults });
+  }
+
+  // Send final reply if we have text
+  if (finalText) {
+    try {
+      await feishu.sendMessage(chatId, finalText, 'chat_id');
+      await appendHistory(chatId, 'assistant', finalText).catch(() => {});
+    } catch (err) {
+      logger.error('Failed to send reply', { error: err.message });
+    }
+  }
+
+  return { ok: true };
 }
+
+// ---------------------------------------------------------------------------
+// Legacy exports (keep for compat)
+// ---------------------------------------------------------------------------
 
 module.exports = {
-  formatForAgent,
-  forwardToAgent,
   forwardToOwnerAgent,
-  getAgentConfig,
-  isAgentConfigured,
-  generateSignature,
-  BRIDGE_VERSION,
-  CAPABILITIES,
+  isAgentConfigured: () => !!process.env.ANTHROPIC_API_KEY,
+  getAgentConfig: () => process.env.ANTHROPIC_API_KEY ? { model: MODEL } : null,
 };

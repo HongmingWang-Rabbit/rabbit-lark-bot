@@ -13,6 +13,7 @@ const agentRoutes = require('./routes/agent');
 const userRoutes = require('./routes/users');
 const { sendPendingReminders } = require('./services/reminder');
 const sessions = require('./db/sessions');
+const { ensureConversationHistory } = require('./db/index');
 
 // 验证环境变量
 validateEnv();
@@ -89,6 +90,9 @@ async function start() {
     // Test DB connection
     await pool.query('SELECT NOW()');
     logger.info('Database connected');
+
+    // Ensure conversation_history table exists
+    await ensureConversationHistory(pool);
 
     server = app.listen(PORT, () => {
       logger.info(`🐰 Rabbit Lark Server started`, { port: PORT });
