@@ -124,6 +124,81 @@ function senderLabel(user: RabbitLarkUser | undefined, chatType: "p2p" | "group"
 }
 
 // ---------------------------------------------------------------------------
+// Task action executor (module-level, used by both direct path & agent path)
+// ---------------------------------------------------------------------------
+
+type SendFn = (content: string) => Promise<void>;
+type ApiFn  = (path: string, method?: string, body?: unknown) => Promise<unknown>;
+
+async function executeTaskAction(
+  action: Record<string, unknown>,
+  userOpenId: string | undefined,
+  send: SendFn,
+  api: ApiFn,
+): Promise<void> {
+  // classifier uses "intent" key, legacy ACTION: format uses "action" key
+  const type = (action.intent ?? action.action) as string;
+
+  if (type === "list_tasks") {
+    if (!userOpenId) { await send("⚠️ 无法识别你的用户 ID"); return; }
+    const result = await api(`/api/agent/tasks?open_id=${encodeURIComponent(userOpenId)}`) as { tasks: Array<{id: number; title: string; deadline: string | null}> };
+    const tasks = result.tasks ?? [];
+    if (tasks.length === 0) {
+      await send("🎉 你目前没有待办催办任务！");
+    } else {
+      const lines = tasks.map((t, i) =>
+        `${i + 1}. 【${t.title}】${t.deadline ? ` 截止 ${t.deadline.slice(0, 10)}` : ""}`
+      );
+      await send(`📋 你的待办任务（${tasks.length} 项）：\n\n${lines.join("\n")}\n\n发送「完成 任务名」标记完成`);
+    }
+    return;
+  }
+
+  if (type === "complete_task") {
+    if (!userOpenId) { await send("⚠️ 无法识别你的用户 ID"); return; }
+    const result = await api(`/api/agent/tasks?open_id=${encodeURIComponent(userOpenId)}`) as { tasks: Array<{id: number; title: string}> };
+    const tasks = result.tasks ?? [];
+    const taskName = ((action.task_name ?? action.taskName) as string | undefined)?.toLowerCase().trim() ?? "";
+    const proof = (action.proof as string | undefined) ?? "";
+
+    let target = tasks.find(t => t.title.toLowerCase() === taskName);
+    if (!target) target = tasks.find(t => t.title.toLowerCase().includes(taskName));
+    if (!target && tasks.length === 1) target = tasks[0];
+
+    if (!target) {
+      if (tasks.length === 0) {
+        await send("✅ 你目前没有待办任务");
+      } else {
+        const list = tasks.map((t, i) => `${i + 1}. ${t.title}`).join("\n");
+        await send(`⚠️ 没找到「${taskName}」，你的待办任务是：\n\n${list}\n\n请发「完成 任务名」指定要完成哪个`);
+      }
+      return;
+    }
+
+    await api(`/api/agent/tasks/${target.id}/complete`, "POST", { user_open_id: userOpenId, proof });
+    await send(`✅ 任务「${target.title}」已标记为完成！${proof ? `\n📎 ${proof}` : ""}`);
+    return;
+  }
+
+  if (type === "create_task") {
+    const title = action.title as string;
+    const targetOpenId = action.target_open_id as string;
+    if (!title || !targetOpenId) { await send("⚠️ 创建任务需要任务名和被催办人"); return; }
+    const taskResult = await api("/api/agent/tasks", "POST", {
+      title,
+      target_open_id: targetOpenId,
+      reporter_open_id: userOpenId ?? null,
+      deadline: action.deadline ?? null,
+      note: action.note ?? null,
+    }) as { task: { id: number; title: string } };
+    await send(`📋 任务「${taskResult.task.title}」已创建，已通知执行人`);
+    return;
+  }
+
+  console.warn(`[rabbit-lark] unknown task action: ${type}`);
+}
+
+// ---------------------------------------------------------------------------
 // Inbound message processing
 // ---------------------------------------------------------------------------
 
@@ -171,38 +246,120 @@ async function processInbound(payload: RabbitLarkPayload, rawBody: string): Prom
     ? `${senderLabel(payload.user, chatType)} in group:${chatId}`
     : `user:${userId}`;
 
-  // Build system context for Claude.
-  // For task actions, Claude should respond with ACTION:<json> on the FIRST line.
-  // The plugin will intercept that, call the API itself via fetch(), and send a
-  // human-readable reply — Claude does NOT need to call exec/curl.
-  let bodyText = text;
+  // -- Step 1: Classify intent via direct Anthropic API call -----------------
+  // Plugin handles task operations itself via fetch(); only falls back to the
+  // full OpenClaw agent for general conversation.
+  let taskAction: Record<string, unknown> | null = null;
+  let generalReply: string | null = null;
+
   if (payload.userContext) {
     const uc = payload.userContext;
     const allowed = Object.entries(uc.allowedFeatures ?? {})
       .filter(([, v]) => v)
       .map(([k]) => k);
+    const rabbitApiUrl = (larkCfg.rabbitApiUrl as string | undefined) ?? "http://localhost:3456";
 
-    const systemContext = [
-      `## Current User`,
-      `Name: ${uc.name ?? "unknown"} | Role: ${uc.role ?? "user"} | open_id: ${uc.openId ?? "unknown"}`,
-      `Allowed features: ${allowed.length ? allowed.join(", ") : "none"}`,
-      ``,
-      `## Task Actions`,
-      `If the user's message involves a task operation, respond with ONLY this on the first line:`,
-      `ACTION:{"action":"<name>", ...params}`,
-      ``,
-      `Available actions (only if user has the required feature):`,
-      `- List tasks (cuiban_view):      ACTION:{"action":"list_tasks"}`,
-      `- Complete task (cuiban_complete): ACTION:{"action":"complete_task","task_name":"<name or partial>","proof":"<url, optional>"}`,
-      `- Create task (cuiban_create):   ACTION:{"action":"create_task","title":"<name>","target_open_id":"<open_id>","deadline":"YYYY-MM-DD (optional)"}`,
-      ``,
-      `After the ACTION line you may add a short friendly Chinese explanation for the user (optional).`,
-      `If no task action is needed, reply normally in Chinese.`,
-      `Only use actions the user is allowed to perform.`,
-    ].join("\n");
+    try {
+      // Use OpenClaw gateway's local /v1/chat/completions endpoint
+      // (avoids needing a raw Anthropic key; routes through same auth as gateway)
+      const gatewayToken = (larkCfg.gatewayToken as string | undefined) ?? "";
+      const gatewayPort = 18789;
 
-    bodyText = `${text}\n\n${systemContext}`;
+      if (gatewayToken) {
+        const classifyResp = await fetch(`http://127.0.0.1:${gatewayPort}/v1/chat/completions`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${gatewayToken}`,
+          },
+          body: JSON.stringify({
+            model: "openclaw:main",
+            max_tokens: 300,
+            system: [
+              "You are an intent classifier for a Feishu (Lark) task management bot.",
+              "Classify the user message and return ONLY valid JSON, no markdown, no explanation.",
+              "",
+              `User info: name=${uc.name ?? "unknown"}, open_id=${uc.openId ?? "unknown"}`,
+              `Allowed features: ${allowed.join(", ")}`,
+              "",
+              "Return one of:",
+              '{"intent":"list_tasks"}',
+              '{"intent":"complete_task","task_name":"<name>","proof":"<url or empty>"}',
+              '{"intent":"create_task","title":"<title>","target_open_id":"<open_id>","deadline":"<YYYY-MM-DD or null>","note":"<note or null>"}',
+              '{"intent":"chat","reply":"<friendly Chinese reply>"}',
+              "",
+              "Rules:",
+              "- Only use task intents if user has the required feature (cuiban_view/complete/create).",
+              "- For create_task, target_open_id must be a real open_id (ou_xxx). If unknown, use intent=chat and ask.",
+              `- Current user's own open_id is: ${uc.openId ?? "unknown"}`,
+              "- For ambiguous or general conversation, use intent=chat.",
+            ].join("\n"),
+            messages: [{ role: "user", content: text }],
+          }),
+        });
+
+        if (classifyResp.ok) {
+          // OpenAI-compat format: choices[0].message.content
+          const classifyData = await classifyResp.json() as { choices?: Array<{ message?: { content?: string } }> };
+          const raw = classifyData?.choices?.[0]?.message?.content?.trim() ?? "";
+          const parsed = JSON.parse(raw) as Record<string, unknown>;
+          if (parsed.intent === "chat") {
+            generalReply = parsed.reply as string;
+          } else {
+            taskAction = parsed;
+          }
+        }
+      }
+    } catch (err) {
+      console.warn("[rabbit-lark] classification failed, falling back to agent:", err);
+    }
   }
+
+  // -- Step 2a: Task action — plugin executes directly, no agent needed ------
+  if (taskAction) {
+    const uc = payload.userContext;
+    const rabbitApiUrl = (larkCfg.rabbitApiUrl as string | undefined) ?? "http://localhost:3456";
+
+    const replyUrl2a = resolveReplyApiUrl(payload, larkCfg);
+    const sendFn: SendFn = async (content) => {
+      if (!replyUrl2a) return;
+      const h: Record<string, string> = { "Content-Type": "application/json" };
+      if (apiKey) h["Authorization"] = `Bearer ${apiKey}`;
+      await fetch(replyUrl2a, { method: "POST", headers: h, body: JSON.stringify({ chat_id: chatId, content, ...(messageId ? { reply_to_message_id: messageId } : {}) }) });
+    };
+    const apiFn: ApiFn = async (path, method = "GET", body?) => {
+      const h: Record<string, string> = { "Content-Type": "application/json" };
+      if (apiKey) h["Authorization"] = `Bearer ${apiKey}`;
+      const r = await fetch(`${rabbitApiUrl}${path}`, { method, headers: h, ...(body ? { body: JSON.stringify(body) } : {}) });
+      if (!r.ok) throw new Error(`${method} ${path} → ${r.status}: ${await r.text()}`);
+      return r.json();
+    };
+
+    try {
+      await executeTaskAction(taskAction, uc?.openId, sendFn, apiFn);
+    } catch (err) {
+      console.error("[rabbit-lark] executeTaskAction failed:", err);
+      await sendFn("⚠️ 操作失败，请稍后重试");
+    }
+    return; // Done — no OpenClaw agent needed
+  }
+
+  // -- Step 2b: General reply from classifier — send directly ---------------
+  if (generalReply) {
+    const replyUrl = resolveReplyApiUrl(payload, larkCfg);
+    if (replyUrl) {
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
+      await fetch(replyUrl, {
+        method: "POST", headers,
+        body: JSON.stringify({ chat_id: chatId, content: generalReply, ...(messageId ? { reply_to_message_id: messageId } : {}) }),
+      });
+    }
+    return;
+  }
+
+  // -- Step 2c: Fallback — full OpenClaw agent (session history, complex tasks)
+  let bodyText = text;
 
   const body = core.channel.reply.formatAgentEnvelope({
     channel: "Lark (Feishu)",
@@ -239,135 +396,41 @@ async function processInbound(payload: RabbitLarkPayload, rawBody: string): Prom
     accountId: "default",
   });
 
-  // Resolve reply endpoint
+  // Resolve reply endpoint (used by fallback agent path)
   const replyApiUrl = resolveReplyApiUrl(payload, larkCfg);
-  const rabbitApiUrl = (larkCfg.rabbitApiUrl as string | undefined) ?? "http://localhost:3456";
+  const rabbitApiUrl2 = (larkCfg.rabbitApiUrl as string | undefined) ?? "http://localhost:3456";
 
-  /** Send a text message back to the Feishu chat */
-  async function sendToFeishu(content: string): Promise<void> {
+  const deliverSend: SendFn = async (content) => {
     if (!replyApiUrl) return;
-    const headers: Record<string, string> = { "Content-Type": "application/json" };
-    if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
-    const resp = await fetch(replyApiUrl, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        chat_id: chatId,
-        content,
-        ...(messageId ? { reply_to_message_id: messageId } : {}),
-      }),
-    });
-    if (!resp.ok) {
-      const errText = await resp.text();
-      console.error(`[rabbit-lark] reply failed: ${resp.status} ${errText}`);
-    }
-  }
-
-  /** Call rabbit-lark-bot API from the plugin (no exec/curl needed) */
-  async function callRabbitApi(path: string, method = "GET", body?: unknown): Promise<unknown> {
-    const headers: Record<string, string> = { "Content-Type": "application/json" };
-    if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
-    const resp = await fetch(`${rabbitApiUrl}${path}`, {
-      method,
-      headers,
-      ...(body ? { body: JSON.stringify(body) } : {}),
-    });
-    if (!resp.ok) throw new Error(`API ${method} ${path} → ${resp.status}: ${await resp.text()}`);
-    return resp.json();
-  }
-
-  /** Execute an ACTION from Claude's structured response */
-  async function executeAction(action: Record<string, unknown>, userOpenId: string | undefined): Promise<void> {
-    const type = action.action as string;
-
-    if (type === "list_tasks") {
-      if (!userOpenId) { await sendToFeishu("⚠️ 无法识别你的用户 ID"); return; }
-      const result = await callRabbitApi(`/api/agent/tasks?open_id=${encodeURIComponent(userOpenId)}`) as { tasks: Array<{id: number; title: string; deadline: string | null; status: string}> };
-      const tasks = result.tasks ?? [];
-      if (tasks.length === 0) {
-        await sendToFeishu("✅ 你目前没有待办任务");
-      } else {
-        const lines = tasks.map((t, i) =>
-          `${i + 1}. 【${t.title}】${t.deadline ? ` 截止 ${t.deadline.slice(0, 10)}` : ""}`
-        );
-        await sendToFeishu(`📋 你的待办任务（${tasks.length} 项）：\n\n${lines.join("\n")}\n\n发送「完成 任务名」标记完成`);
-      }
-      return;
-    }
-
-    if (type === "complete_task") {
-      if (!userOpenId) { await sendToFeishu("⚠️ 无法识别你的用户 ID"); return; }
-      // First list tasks to find the matching one
-      const result = await callRabbitApi(`/api/agent/tasks?open_id=${encodeURIComponent(userOpenId)}`) as { tasks: Array<{id: number; title: string}> };
-      const tasks = result.tasks ?? [];
-      const taskName = (action.task_name as string | undefined)?.toLowerCase().trim() ?? "";
-      const proof = (action.proof as string | undefined) ?? "";
-
-      let target = tasks.find(t => t.title.toLowerCase() === taskName);
-      if (!target) target = tasks.find(t => t.title.toLowerCase().includes(taskName));
-      if (!target && tasks.length === 1) target = tasks[0]; // only one task, complete it
-
-      if (!target) {
-        if (tasks.length === 0) {
-          await sendToFeishu("✅ 你目前没有待办任务");
-        } else {
-          const list = tasks.map((t, i) => `${i + 1}. ${t.title}`).join("\n");
-          await sendToFeishu(`⚠️ 没找到「${taskName}」，你的待办任务是：\n\n${list}\n\n请发「完成 任务名」指定要完成哪个`);
-        }
-        return;
-      }
-
-      await callRabbitApi(`/api/agent/tasks/${target.id}/complete`, "POST", {
-        user_open_id: userOpenId,
-        proof,
-      });
-      await sendToFeishu(`✅ 任务「${target.title}」已标记为完成！${proof ? `\n📎 ${proof}` : ""}`);
-      return;
-    }
-
-    if (type === "create_task") {
-      const title = action.title as string;
-      const targetOpenId = action.target_open_id as string;
-      if (!title || !targetOpenId) { await sendToFeishu("⚠️ 创建任务需要任务名和被催办人"); return; }
-      const taskResult = await callRabbitApi("/api/agent/tasks", "POST", {
-        title,
-        target_open_id: targetOpenId,
-        reporter_open_id: userOpenId ?? null,
-        deadline: action.deadline ?? null,
-        note: action.note ?? null,
-      }) as { task: { id: number; title: string } };
-      await sendToFeishu(`📋 任务「${taskResult.task.title}」已创建，已通知执行人`);
-      return;
-    }
-
-    console.warn(`[rabbit-lark] unknown action type: ${type}`);
-  }
+    const h: Record<string, string> = { "Content-Type": "application/json" };
+    if (apiKey) h["Authorization"] = `Bearer ${apiKey}`;
+    const resp = await fetch(replyApiUrl, { method: "POST", headers: h, body: JSON.stringify({ chat_id: chatId, content, ...(messageId ? { reply_to_message_id: messageId } : {}) }) });
+    if (!resp.ok) console.error(`[rabbit-lark] reply failed: ${resp.status}`);
+  };
+  const deliverApi: ApiFn = async (path, method = "GET", body?) => {
+    const h: Record<string, string> = { "Content-Type": "application/json" };
+    if (apiKey) h["Authorization"] = `Bearer ${apiKey}`;
+    const r = await fetch(`${rabbitApiUrl2}${path}`, { method, headers: h, ...(body ? { body: JSON.stringify(body) } : {}) });
+    if (!r.ok) throw new Error(`${method} ${path} → ${r.status}`);
+    return r.json();
+  };
 
   const deliverReply = createNormalizedOutboundDeliverer(async (outPayload) => {
-    if (!replyApiUrl) {
-      console.warn("[rabbit-lark] no reply API URL available, cannot send reply");
-      return;
-    }
+    if (!replyApiUrl) { console.warn("[rabbit-lark] no reply API URL"); return; }
     const replyText = outPayload.text?.trim();
     if (!replyText) return;
 
-    // Check if Claude returned a structured ACTION on the first line
+    // Safety net: if agent happened to return ACTION: format, execute it
     const firstLine = replyText.split("\n")[0].trim();
     if (firstLine.startsWith("ACTION:")) {
       try {
-        const jsonStr = firstLine.slice("ACTION:".length).trim();
-        const action = JSON.parse(jsonStr) as Record<string, unknown>;
-        const userOpenId = payload.userContext?.openId;
-        await executeAction(action, userOpenId);
-        return; // action handled, don't send raw text
-      } catch (err) {
-        console.error("[rabbit-lark] failed to parse ACTION json:", err);
-        // Fall through to send as regular text
-      }
+        const action = JSON.parse(firstLine.slice("ACTION:".length).trim()) as Record<string, unknown>;
+        await executeTaskAction(action, payload.userContext?.openId, deliverSend, deliverApi);
+        return;
+      } catch { /* fall through */ }
     }
 
-    // Regular text reply
-    await sendToFeishu(replyText);
+    await deliverSend(replyText);
   });
 
   await core.channel.reply.dispatchReplyWithBufferedBlockDispatcher({

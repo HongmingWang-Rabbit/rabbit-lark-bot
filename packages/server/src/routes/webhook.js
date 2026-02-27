@@ -237,7 +237,7 @@ router.post('/event', async (req, res) => {
     if (sessionHandled) return res.json({ success: true });
 
     // ── [5] 催办直接命令 ──────────────────────────────────────────────────
-    if (['cuiban_view', 'cuiban_complete', 'cuiban_create'].includes(intent)) {
+    if (['cuiban_view', 'cuiban_complete', 'cuiban_create', 'cuiban_create_nl'].includes(intent)) {
       logger.info('📋 Handling cuiban command', { intent, senderId, text: messageText.slice(0, 60) });
       const handled = await handleCuibanCommand({
         intent,
