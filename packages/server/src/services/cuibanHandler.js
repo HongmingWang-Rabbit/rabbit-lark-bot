@@ -134,8 +134,18 @@ async function handleCuibanCommand({ intent, text, user, senderId, openId, chatI
       return true;
     }
 
-    const match = text.trim().match(/^(?:完成|done|\/done|\/complete)\s*([\s\S]*)?$/i);
-    const arg = (match?.[1] || '').trim();
+    // 支持两种格式：
+    //   正向：完成 [任务名/序号] [证明链接]
+    //   自然语言：[任务名] 任务完成 / [任务名] 完成了
+    const forwardMatch = text.trim().match(/^(?:完成|done|\/done|\/complete)\s*([\s\S]*)?$/i);
+    const reverseMatch = text.trim().match(/^([\s\S]+?)\s+(?:任务完成|完成了|已完成|done了)(\s+https?:\/\/\S+)?$/i);
+    let arg = '';
+    if (forwardMatch) {
+      arg = (forwardMatch[1] || '').trim();
+    } else if (reverseMatch) {
+      arg = (reverseMatch[1] || '').trim();
+      if (reverseMatch[2]) arg += reverseMatch[2].trim();
+    }
 
     const urlMatch = arg.match(/(https?:\/\/[^\s]+)/);
     const proof = urlMatch?.[1] || '';

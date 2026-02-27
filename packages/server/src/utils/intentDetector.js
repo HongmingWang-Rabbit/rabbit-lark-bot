@@ -30,8 +30,10 @@ const CUIBAN_VIEW_PATTERNS = [
 ];
 
 // 催办 complete: 完成... / done / /done / /complete
+// Also matches natural language like "test 任务完成" / "报告完成了"
 const CUIBAN_COMPLETE_PATTERNS = [
   /^(完成|done|\/done|\/complete)(\s.*)?$/i,
+  /^.{1,100}\s*(任务完成|完成了|已完成|done了)(\s+https?:\/\/\S+)?$/i,
 ];
 
 // 催办 create: /add ...
