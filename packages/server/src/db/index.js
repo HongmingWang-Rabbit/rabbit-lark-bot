@@ -120,7 +120,9 @@ const audit = {
       params.push(action);
     }
 
-    query += ` ORDER BY created_at DESC LIMIT $${paramIndex++} OFFSET $${paramIndex}`;
+    const limitIdx = paramIndex++;
+    const offsetIdx = paramIndex++;
+    query += ` ORDER BY created_at DESC LIMIT $${limitIdx} OFFSET $${offsetIdx}`;
     params.push(limit, offset);
 
     const result = await pool.query(query, params);

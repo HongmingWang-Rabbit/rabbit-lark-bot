@@ -148,10 +148,11 @@ async function sendMessage(receiveId, text, receiveIdType = 'user_id', replyToMe
 
   let url = `/im/v1/messages?${new URLSearchParams({ receive_id_type: receiveIdType })}`;
 
-  // Use reply endpoint if replying to a specific message
+  // Use the reply endpoint for threaded replies.
+  // The reply API uses a different path and ignores receive_id / receive_id_type;
+  // msg_type and content remain required in the body.
   if (replyToMessageId) {
     url = `/im/v1/messages/${encodeURIComponent(replyToMessageId)}/reply`;
-    // Reply API doesn't use receive_id or receive_id_type
     delete body.receive_id;
   }
 

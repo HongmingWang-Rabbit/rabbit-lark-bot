@@ -44,15 +44,18 @@ const CUIBAN_CREATE_PATTERN = /^\/add(\s|$)/i;
  * @param {string} text - Raw message text
  * @returns {'greeting' | 'menu' | 'cuiban_view' | 'cuiban_complete' | 'cuiban_create' | 'command' | 'unknown'}
  */
+// NOTE: The check order below is load-bearing. The short-message greeting fallback
+// at the bottom must come AFTER all command/cuiban patterns, because short strings
+// like "完成" (2 chars) or "我的任务" (4 chars) would be mis-classified as greetings
+// if the greeting fallback ran first. Do not reorder without a full audit.
 function detectIntent(text) {
   if (!text) return 'unknown';
   const trimmed = text.trim();
 
-  // Cuiban create (/add ...) — check before generic slash command
+  // Cuiban create (/add ...) — check before generic slash command catch-all
   if (CUIBAN_CREATE_PATTERN.test(trimmed)) return 'cuiban_create';
 
-
-  // Explicit slash commands (catch-all)
+  // Explicit slash commands (catch-all for any other /command)
   if (trimmed.startsWith('/')) return 'command';
 
   // Explicit menu/help request
@@ -65,7 +68,7 @@ function detectIntent(text) {
     if (pattern.test(trimmed)) return 'cuiban_view';
   }
 
-  // Cuiban complete
+  // Cuiban complete — must come before greeting fallback (e.g. "完成" is 2 chars)
   for (const pattern of CUIBAN_COMPLETE_PATTERNS) {
     if (pattern.test(trimmed)) return 'cuiban_complete';
   }
@@ -75,7 +78,8 @@ function detectIntent(text) {
     if (pattern.test(trimmed)) return 'greeting';
   }
 
-  // Very short messages (≤6 chars, no links) are likely greetings or vague
+  // Very short messages (≤6 chars, no links) are likely greetings or vague chatter.
+  // All actionable short commands (完成, 我的任务, etc.) were already matched above.
   if (trimmed.length <= 6 && !trimmed.includes('http')) return 'greeting';
 
   return 'unknown';

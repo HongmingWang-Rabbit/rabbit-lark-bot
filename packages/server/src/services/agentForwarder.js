@@ -142,6 +142,26 @@ async function executeTool(name, input, { userOpenId, chatId }) {
   }
 
   if (name === 'complete_task') {
+    // Ownership check: only the task's assignee may complete it via chat.
+    // Admins can use the web UI which bypasses this guard.
+    const { rows: taskRows } = await pool.query(
+      'SELECT assignee_open_id, assignee_id FROM tasks WHERE id = $1 AND status = $2',
+      [input.task_id, 'pending']
+    );
+    const taskRecord = taskRows[0];
+    if (!taskRecord) return { success: false, message: '任务不存在或已完成' };
+
+    const isOwner =
+      taskRecord.assignee_open_id === userOpenId ||
+      taskRecord.assignee_id === userOpenId;
+    if (!isOwner) {
+      logger.warn('Unauthorized complete_task attempt', {
+        taskId: input.task_id, userOpenId,
+        assigneeOpenId: taskRecord.assignee_open_id,
+      });
+      return { success: false, message: '你只能完成分配给自己的任务' };
+    }
+
     const completed = await reminderService.completeTask(
       input.task_id,
       input.proof || '',
@@ -320,7 +340,7 @@ async function forwardToOwnerAgent(event, apiBaseUrl, userContext = null) {
     messages.push({ role: 'user', content: toolResults });
   }
 
-  // Send final reply if we have text
+  // Send final reply
   if (finalText) {
     try {
       await feishu.sendMessage(chatId, finalText, 'chat_id');
@@ -328,6 +348,11 @@ async function forwardToOwnerAgent(event, apiBaseUrl, userContext = null) {
     } catch (err) {
       logger.error('Failed to send reply', { error: err.message });
     }
+  } else {
+    // No text generated — this happens if Claude only called tools and hit MAX_TOOL_ROUNDS
+    // without producing a summary. Notify the user so the request doesn't silently vanish.
+    logger.warn('Agentic loop produced no text response', { chatId, rounds });
+    await feishu.sendMessage(chatId, '⚠️ 操作处理中遇到问题，请稍后重试或换种说法', 'chat_id').catch(() => {});
   }
 
   return { ok: true };
@@ -340,5 +365,7 @@ async function forwardToOwnerAgent(event, apiBaseUrl, userContext = null) {
 module.exports = {
   forwardToOwnerAgent,
   isAgentConfigured: () => !!process.env.ANTHROPIC_API_KEY,
-  getAgentConfig: () => process.env.ANTHROPIC_API_KEY ? { model: MODEL } : null,
+  getAgentConfig: () => process.env.ANTHROPIC_API_KEY
+    ? { model: MODEL, maxHistoryMessages: MAX_HISTORY, maxToolRounds: MAX_TOOL_ROUNDS }
+    : null,
 };

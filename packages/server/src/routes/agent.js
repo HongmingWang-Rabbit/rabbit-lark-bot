@@ -154,12 +154,13 @@ router.get('/user/:user_id', async (req, res) => {
 router.get('/status', (req, res) => {
   const configured = agentForwarder.isAgentConfigured();
   const config = agentForwarder.getAgentConfig();
-  
+
   res.json({
     success: true,
     configured,
-    // 不暴露完整 URL，只显示是否配置
-    webhook_configured: !!config?.webhookUrl,
+    model: config?.model ?? null,
+    maxHistoryMessages: config?.maxHistoryMessages ?? null,
+    maxToolRounds: config?.maxToolRounds ?? null,
   });
 });
 
@@ -256,8 +257,6 @@ router.post('/tasks', async (req, res) => {
 router.get('/schema', (req, res) => {
   res.json({
     success: true,
-    version: agentForwarder.BRIDGE_VERSION,
-    capabilities: agentForwarder.CAPABILITIES,
     message_format: {
       source: {
         bridge: 'rabbit-lark-bot',

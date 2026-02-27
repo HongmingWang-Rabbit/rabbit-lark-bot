@@ -257,8 +257,16 @@ router.post('/event', async (req, res) => {
     }
 
     // ── [6] 转发给 AI Agent ────────────────────────────────────────────────
+    // Skip if there's no text to process (e.g. non-text message types, parse failure)
+    if (!messageText) {
+      logger.debug('Empty messageText, skipping agent forward', { msgType });
+      return res.json({ success: true });
+    }
+
     logger.info('🤖 Forwarding to AI agent', { userId: user?.user_id, intent });
     const apiBaseUrl = process.env.API_BASE_URL || `http://localhost:${process.env.PORT || 3456}`;
+    // Fire-and-forget: Feishu expects a response within 3s; agent runs asynchronously.
+    // Inner try/catch prevents an unhandled rejection if the error-reply itself throws.
     agentForwarder.forwardToOwnerAgent(event, apiBaseUrl, user).catch(async (err) => {
       logger.error('Agent forwarding failed', { error: err.message });
       if (chatId) {

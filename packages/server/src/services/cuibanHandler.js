@@ -195,7 +195,9 @@ async function handleCuibanCommand({ intent, text, user, senderId, openId, chatI
     });
     msg += '\n（回复数字选择，如「1」）';
 
-    // Store only id + title to avoid bloating the session table
+    // Store only id + title to avoid bloating the session table.
+    // completeTaskAndReply() only reads task.id and task.title, so this is safe.
+    // If you ever add more fields to that function, update this shape too.
     const taskSummaries = tasks.map(t => ({ id: t.id, title: t.title }));
     await sessions.set(sessionKey, { tasks: taskSummaries, proof, step: 'complete_select', chatId, messageId });
     await replyToChat(chatId, messageId, msg);

@@ -247,7 +247,9 @@ const users = {
       query += ` AND role = $${idx++}`;
       params.push(role);
     }
-    query += ` ORDER BY created_at DESC LIMIT $${idx++} OFFSET $${idx}`;
+    const limitIdx = idx++;
+    const offsetIdx = idx++;
+    query += ` ORDER BY created_at DESC LIMIT $${limitIdx} OFFSET $${offsetIdx}`;
     params.push(limit, offset);
 
     const result = await pool.query(query, params);
