@@ -57,9 +57,13 @@ services:
     build:
       context: ./packages/web
       dockerfile: Dockerfile
-      # NOTE: NEXT_PUBLIC_* vars are passed at runtime (not build time) to avoid
-      # baking secrets into Docker image layers visible via `docker history`.
-      args: {}
+      # NEXT_PUBLIC_API_KEY must be a build-time ARG because Next.js inlines
+      # NEXT_PUBLIC_* vars into the client bundle at build time (runtime env has no effect).
+      # Note: this means the key will be visible in `docker history`; that's acceptable
+      # since it's also readable from the browser bundle anyway.
+      args:
+        NEXT_PUBLIC_API_KEY: ${NEXT_PUBLIC_API_KEY:-}
+        NEXT_PUBLIC_ADMIN_PASSWORD: ${NEXT_PUBLIC_ADMIN_PASSWORD:-}
     container_name: rabbit-lark-web
     restart: unless-stopped
     depends_on:

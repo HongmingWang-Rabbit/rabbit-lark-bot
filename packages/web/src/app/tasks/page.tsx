@@ -32,11 +32,12 @@ export default function TasksPage() {
   const userMap = useUserMap();
   const [showForm, setShowForm] = useState(false);
 
-  if (isLoading) return <LoadingState />;
-  if (error) return <ErrorState message={error.message} retryKey={SWR_KEYS.tasks} />;
-
+  // useMemo must be called before any early returns (Rules of Hooks)
   const pending   = useMemo(() => (tasks ?? []).filter(t => t.status === 'pending'), [tasks]);
   const completed = useMemo(() => (tasks ?? []).filter(t => t.status === 'completed'), [tasks]);
+
+  if (isLoading) return <LoadingState />;
+  if (error) return <ErrorState message={error.message} retryKey={SWR_KEYS.tasks} />;
 
   return (
     <div>
