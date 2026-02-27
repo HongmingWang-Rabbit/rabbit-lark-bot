@@ -18,7 +18,7 @@ const reminderService = require('./reminder');
 const usersDb = require('../db/users');
 const feishu = require('../feishu/client');
 
-const MODEL = 'claude-haiku-4-5';
+const MODEL = 'claude-haiku-4-5-20251001'; // cheapest & fastest
 const MAX_HISTORY = 20;        // messages per chat to keep
 const MAX_TOOL_ROUNDS = 5;     // prevent infinite loops
 
