@@ -169,7 +169,9 @@ async function executeTool(name, input, { userOpenId, chatId }) {
 // System prompt builder
 // ---------------------------------------------------------------------------
 
-function buildSystemPrompt(userContext, registeredUsers) {
+function buildSystemPrompt(userContext, registeredUsers, now = new Date()) {
+  const today = now.toISOString().slice(0, 10); // YYYY-MM-DD
+  const todayLabel = now.toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', timeZone: 'Asia/Shanghai' });
   const allowed = Object.entries(userContext?.allowedFeatures ?? {})
     .filter(([, v]) => v).map(([k]) => k);
 
@@ -178,7 +180,8 @@ function buildSystemPrompt(userContext, registeredUsers) {
     : '  (暂无注册用户)';
 
   return [
-    '你是一个飞书（Feishu/Lark）催办任务助手。你通过工具调用来管理任务，用中文与用户交流。',
+    `你是一个飞书（Feishu/Lark）催办任务助手。你通过工具调用来管理任务，用中文与用户交流。`,
+    `今天是 ${todayLabel}（${today}）。处理截止日期时：今天=${today}，明天=${new Date(now.getTime()+86400000).toISOString().slice(0,10)}，以此类推。`,
     '',
     '## 当前用户',
     `姓名: ${userContext?.name ?? '未知'} | open_id: ${userContext?.openId ?? '未知'}`,
