@@ -11,6 +11,7 @@
 
 const crypto = require('crypto');
 const logger = require('../utils/logger');
+const usersDb = require('../db/users');
 
 /**
  * Standard message format sent to agents
@@ -206,11 +207,26 @@ async function forwardToOwnerAgent(event, apiBaseUrl, userContext = null) {
   if (userContext) {
     message.userContext = {
       userId: userContext.user_id,
-      openId: userContext.open_id,          // needed for MCP task tool calls
+      openId: userContext.open_id,
       name: userContext.name,
       role: userContext.role,
       allowedFeatures: userContext.resolvedFeatures ?? {},
     };
+  }
+
+  // Attach registered users list so the agent can resolve names to open_ids
+  // without needing to make exec/curl calls
+  try {
+    const allUsers = await usersDb.list({ limit: 100 });
+    message.registeredUsers = allUsers.map(u => ({
+      name: u.name || null,
+      email: u.email || null,
+      open_id: u.open_id || null,
+      feishu_user_id: u.feishu_user_id || null,
+    })).filter(u => u.open_id || u.feishu_user_id);
+  } catch (err) {
+    logger.debug('Could not fetch users for agent context', { error: err.message });
+    message.registeredUsers = [];
   }
   
   // Redact URL to avoid leaking embedded credentials in logs

@@ -36,18 +36,8 @@ const CUIBAN_COMPLETE_PATTERNS = [
   /^.{1,100}\s*(任务完成|完成了|已完成|done了)(\s+https?:\/\/\S+)?$/i,
 ];
 
-// 催办 create: /add ... or natural language like "给王鸿铭发一个催办"
+// 催办 create: /add ... (natural language variants go to AI agent)
 const CUIBAN_CREATE_PATTERN = /^\/add(\s|$)/i;
-const CUIBAN_CREATE_NL_PATTERNS = [
-  // 给X发/送催办/任务
-  /给(.{1,20}?)(?:发|送)(?:一?个?)?(?:催办|催一下|任务|提醒)/,
-  // 催一下/催催X
-  /催(?:一下|催|一催)?(.{1,20}?)(?:完成|做|交|提交|处理)?/,
-  // 发催办给X
-  /(?:发|送)催办给(.{1,20})/,
-  // X还没有完成/提交 → create reminder
-  /(.{1,20}?)还没(?:有)?(?:完成|提交|做|交)/,
-];
 
 /**
  * Detect the intent of a message.
@@ -61,13 +51,6 @@ function detectIntent(text) {
   // Cuiban create (/add ...) — check before generic slash command
   if (CUIBAN_CREATE_PATTERN.test(trimmed)) return 'cuiban_create';
 
-  // Natural language cuiban create (e.g. "给王鸿铭发一个催办")
-  if (trimmed.includes('催办') || trimmed.includes('催一下') || trimmed.includes('催催')) {
-    // Make sure it's not just viewing tasks
-    if (!CUIBAN_VIEW_PATTERNS.some(p => p.test(trimmed))) {
-      return 'cuiban_create_nl';
-    }
-  }
 
   // Explicit slash commands (catch-all)
   if (trimmed.startsWith('/')) return 'command';

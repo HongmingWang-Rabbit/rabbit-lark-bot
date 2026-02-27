@@ -246,120 +246,75 @@ async function processInbound(payload: RabbitLarkPayload, rawBody: string): Prom
     ? `${senderLabel(payload.user, chatType)} in group:${chatId}`
     : `user:${userId}`;
 
-  // -- Step 1: Classify intent via direct Anthropic API call -----------------
-  // Plugin handles task operations itself via fetch(); only falls back to the
-  // full OpenClaw agent for general conversation.
-  let taskAction: Record<string, unknown> | null = null;
-  let generalReply: string | null = null;
-
-  if (payload.userContext) {
-    const uc = payload.userContext;
-    const allowed = Object.entries(uc.allowedFeatures ?? {})
-      .filter(([, v]) => v)
-      .map(([k]) => k);
-    const rabbitApiUrl = (larkCfg.rabbitApiUrl as string | undefined) ?? "http://localhost:3456";
-
-    try {
-      // Use OpenClaw gateway's local /v1/chat/completions endpoint
-      // (avoids needing a raw Anthropic key; routes through same auth as gateway)
-      const gatewayToken = (larkCfg.gatewayToken as string | undefined) ?? "";
-      const gatewayPort = 18789;
-
-      if (gatewayToken) {
-        const classifyResp = await fetch(`http://127.0.0.1:${gatewayPort}/v1/chat/completions`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${gatewayToken}`,
-          },
-          body: JSON.stringify({
-            model: "openclaw:main",
-            max_tokens: 300,
-            system: [
-              "You are an intent classifier for a Feishu (Lark) task management bot.",
-              "Classify the user message and return ONLY valid JSON, no markdown, no explanation.",
-              "",
-              `User info: name=${uc.name ?? "unknown"}, open_id=${uc.openId ?? "unknown"}`,
-              `Allowed features: ${allowed.join(", ")}`,
-              "",
-              "Return one of:",
-              '{"intent":"list_tasks"}',
-              '{"intent":"complete_task","task_name":"<name>","proof":"<url or empty>"}',
-              '{"intent":"create_task","title":"<title>","target_open_id":"<open_id>","deadline":"<YYYY-MM-DD or null>","note":"<note or null>"}',
-              '{"intent":"chat","reply":"<friendly Chinese reply>"}',
-              "",
-              "Rules:",
-              "- Only use task intents if user has the required feature (cuiban_view/complete/create).",
-              "- For create_task, target_open_id must be a real open_id (ou_xxx). If unknown, use intent=chat and ask.",
-              `- Current user's own open_id is: ${uc.openId ?? "unknown"}`,
-              "- For ambiguous or general conversation, use intent=chat.",
-            ].join("\n"),
-            messages: [{ role: "user", content: text }],
-          }),
-        });
-
-        if (classifyResp.ok) {
-          // OpenAI-compat format: choices[0].message.content
-          const classifyData = await classifyResp.json() as { choices?: Array<{ message?: { content?: string } }> };
-          const raw = classifyData?.choices?.[0]?.message?.content?.trim() ?? "";
-          const parsed = JSON.parse(raw) as Record<string, unknown>;
-          if (parsed.intent === "chat") {
-            generalReply = parsed.reply as string;
-          } else {
-            taskAction = parsed;
-          }
-        }
-      }
-    } catch (err) {
-      console.warn("[rabbit-lark] classification failed, falling back to agent:", err);
-    }
-  }
-
-  // -- Step 2a: Task action — plugin executes directly, no agent needed ------
-  if (taskAction) {
-    const uc = payload.userContext;
-    const rabbitApiUrl = (larkCfg.rabbitApiUrl as string | undefined) ?? "http://localhost:3456";
-
-    const replyUrl2a = resolveReplyApiUrl(payload, larkCfg);
-    const sendFn: SendFn = async (content) => {
-      if (!replyUrl2a) return;
-      const h: Record<string, string> = { "Content-Type": "application/json" };
-      if (apiKey) h["Authorization"] = `Bearer ${apiKey}`;
-      await fetch(replyUrl2a, { method: "POST", headers: h, body: JSON.stringify({ chat_id: chatId, content, ...(messageId ? { reply_to_message_id: messageId } : {}) }) });
-    };
-    const apiFn: ApiFn = async (path, method = "GET", body?) => {
-      const h: Record<string, string> = { "Content-Type": "application/json" };
-      if (apiKey) h["Authorization"] = `Bearer ${apiKey}`;
-      const r = await fetch(`${rabbitApiUrl}${path}`, { method, headers: h, ...(body ? { body: JSON.stringify(body) } : {}) });
-      if (!r.ok) throw new Error(`${method} ${path} → ${r.status}: ${await r.text()}`);
-      return r.json();
-    };
-
-    try {
-      await executeTaskAction(taskAction, uc?.openId, sendFn, apiFn);
-    } catch (err) {
-      console.error("[rabbit-lark] executeTaskAction failed:", err);
-      await sendFn("⚠️ 操作失败，请稍后重试");
-    }
-    return; // Done — no OpenClaw agent needed
-  }
-
-  // -- Step 2b: General reply from classifier — send directly ---------------
-  if (generalReply) {
-    const replyUrl = resolveReplyApiUrl(payload, larkCfg);
-    if (replyUrl) {
-      const headers: Record<string, string> = { "Content-Type": "application/json" };
-      if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
-      await fetch(replyUrl, {
-        method: "POST", headers,
-        body: JSON.stringify({ chat_id: chatId, content: generalReply, ...(messageId ? { reply_to_message_id: messageId } : {}) }),
-      });
-    }
-    return;
-  }
-
-  // -- Step 2c: Fallback — full OpenClaw agent (session history, complex tasks)
+  // Build context for Claude: user info + registered users + task API docs.
+  // Claude reads this, decides what to do, and replies with either:
+  //   ACTION:{"action":"...",...}   ← plugin executes it via fetch()
+  //   Plain Chinese text            ← sent directly (or a follow-up question)
   let bodyText = text;
+  if (payload.userContext) {
+    const uc = payload.userContext as {
+      name?: string; role?: string; openId?: string;
+      allowedFeatures?: Record<string, boolean>;
+    };
+    const allowed = Object.entries(uc.allowedFeatures ?? {})
+      .filter(([, v]) => v).map(([k]) => k);
+
+    // Registered users (injected by agentForwarder)
+    type RegUser = { name: string|null; email: string|null; open_id: string|null; feishu_user_id: string|null };
+    const regUsers: RegUser[] = (payload as Record<string, unknown>).registeredUsers as RegUser[] ?? [];
+    const userListLines = regUsers.length
+      ? regUsers.map(u => `  - ${u.name ?? "(无名称)"} | email: ${u.email ?? "-"} | open_id: ${u.open_id ?? "-"}`).join("\n")
+      : "  (无注册用户)";
+
+    const systemContext = [
+      "## 你是 Rabbit Lark Bot 的 AI 助手（飞书任务催办系统）",
+      "",
+      "### 当前用户",
+      `姓名: ${uc.name ?? "未知"} | 角色: ${uc.role ?? "user"} | open_id: ${uc.openId ?? "未知"}`,
+      `已开通功能: ${allowed.length ? allowed.join(", ") : "无"}`,
+      "",
+      "### 系统中已注册的用户",
+      userListLines,
+      "",
+      "### ⚠️ 重要规则",
+      "你 **没有** exec、curl、shell 等工具权限。",
+      "处理任务操作时，你的输出必须是 ACTION: JSON（见下）。",
+      "系统会拦截该 JSON 并自动执行对应 API 调用。",
+      "如果信息不足（例如找不到用户），请用中文追问，**不要** 凭空捏造 open_id。",
+      "",
+      "### ACTION 格式（第一行必须是 ACTION:，后跟合法 JSON）",
+      "",
+      "**查看我的任务**（需要 cuiban_view）：",
+      'ACTION:{"action":"list_tasks"}',
+      "",
+      "**标记任务完成**（需要 cuiban_complete）：",
+      'ACTION:{"action":"complete_task","task_name":"任务名称","proof":"证明链接（可选）"}',
+      "",
+      "**创建催办任务**（需要 cuiban_create）：",
+      'ACTION:{"action":"create_task","title":"任务标题","target_open_id":"被催办人的 open_id","deadline":"YYYY-MM-DD（可选）","note":"备注（可选）"}',
+      "注：target_open_id 必须从上方「已注册用户」列表中取，不能自行编造。",
+      "名字匹配规则（按优先级）：",
+      "  1. 完全一致 → 直接发 ACTION",
+      "  2. 相似但不完全一致（如说「王鸿铭」库里是「王泓铭」）→ 先向用户确认：「我找到「王泓铭」，请问是他吗？」",
+      "  3. 找不到 → 告知：「系统里没有找到 XX，请让对方先发一条飞书消息完成注册」",
+      "",
+      "### 示例",
+      '用户说「给王鸿铭发一个测试催办」，注册用户里只有「王泓铭」',
+      '→ 回复：「我找到一个名字相近的用户「王泓铭」，请问你要催办的是他吗？」',
+      "",
+      '用户回复「是的」（或「对」「就是他」等确认语气）',
+      '→ 回复（第一行必须是 ACTION）：',
+      'ACTION:{"action":"create_task","title":"测试催办","target_open_id":"ou_a40b470162259870698c1e852f7301d5"}',
+      "✅ 已为王泓铭创建催办，他将收到飞书提醒。",
+      "",
+      '用户说「帮我催一下张三」注册用户里有两个张三',
+      '→ 回复：「找到两个叫张三的用户，请确认是哪位：\n1. 张三(hr@xx.com)\n2. 张三(dev@xx.com)」',
+      "",
+      "对于与任务无关的普通对话，正常用中文回复即可（不需要 ACTION:）。",
+    ].join("\n");
+
+    bodyText = `${text}\n\n---\n${systemContext}`;
+  }
 
   const body = core.channel.reply.formatAgentEnvelope({
     channel: "Lark (Feishu)",
