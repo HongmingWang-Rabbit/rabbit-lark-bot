@@ -171,26 +171,37 @@ async function processInbound(payload: RabbitLarkPayload, rawBody: string): Prom
     ? `${senderLabel(payload.user, chatType)} in group:${chatId}`
     : `user:${userId}`;
 
-  // Build permission note so the agent knows what this user is allowed to do
+  // Build system context for Claude.
+  // For task actions, Claude should respond with ACTION:<json> on the FIRST line.
+  // The plugin will intercept that, call the API itself via fetch(), and send a
+  // human-readable reply — Claude does NOT need to call exec/curl.
   let bodyText = text;
   if (payload.userContext) {
     const uc = payload.userContext;
     const allowed = Object.entries(uc.allowedFeatures ?? {})
       .filter(([, v]) => v)
       .map(([k]) => k);
-    const denied = Object.entries(uc.allowedFeatures ?? {})
-      .filter(([, v]) => !v)
-      .map(([k]) => k);
-    const permissionNote = [
-      `[User: ${uc.name ?? uc.userId ?? "unknown"} | Role: ${uc.role ?? "user"} | open_id: ${uc.openId ?? "unknown"}]`,
-      allowed.length ? `Allowed features: ${allowed.join(", ")}` : "Allowed features: none",
-      denied.length ? `Denied features: ${denied.join(", ")}` : "",
-      "IMPORTANT: Only respond to requests that use the user's allowed features. Politely refuse anything outside their allowed scope.",
-      uc.openId ? `To list or complete tasks for this user, use their open_id: ${uc.openId}` : "",
-    ]
-      .filter(Boolean)
-      .join("\n");
-    bodyText = `${text}\n\n${permissionNote}`;
+
+    const systemContext = [
+      `## Current User`,
+      `Name: ${uc.name ?? "unknown"} | Role: ${uc.role ?? "user"} | open_id: ${uc.openId ?? "unknown"}`,
+      `Allowed features: ${allowed.length ? allowed.join(", ") : "none"}`,
+      ``,
+      `## Task Actions`,
+      `If the user's message involves a task operation, respond with ONLY this on the first line:`,
+      `ACTION:{"action":"<name>", ...params}`,
+      ``,
+      `Available actions (only if user has the required feature):`,
+      `- List tasks (cuiban_view):      ACTION:{"action":"list_tasks"}`,
+      `- Complete task (cuiban_complete): ACTION:{"action":"complete_task","task_name":"<name or partial>","proof":"<url, optional>"}`,
+      `- Create task (cuiban_create):   ACTION:{"action":"create_task","title":"<name>","target_open_id":"<open_id>","deadline":"YYYY-MM-DD (optional)"}`,
+      ``,
+      `After the ACTION line you may add a short friendly Chinese explanation for the user (optional).`,
+      `If no task action is needed, reply normally in Chinese.`,
+      `Only use actions the user is allowed to perform.`,
+    ].join("\n");
+
+    bodyText = `${text}\n\n${systemContext}`;
   }
 
   const body = core.channel.reply.formatAgentEnvelope({
@@ -230,36 +241,133 @@ async function processInbound(payload: RabbitLarkPayload, rawBody: string): Prom
 
   // Resolve reply endpoint
   const replyApiUrl = resolveReplyApiUrl(payload, larkCfg);
+  const rabbitApiUrl = (larkCfg.rabbitApiUrl as string | undefined) ?? "http://localhost:3456";
+
+  /** Send a text message back to the Feishu chat */
+  async function sendToFeishu(content: string): Promise<void> {
+    if (!replyApiUrl) return;
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
+    const resp = await fetch(replyApiUrl, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        chat_id: chatId,
+        content,
+        ...(messageId ? { reply_to_message_id: messageId } : {}),
+      }),
+    });
+    if (!resp.ok) {
+      const errText = await resp.text();
+      console.error(`[rabbit-lark] reply failed: ${resp.status} ${errText}`);
+    }
+  }
+
+  /** Call rabbit-lark-bot API from the plugin (no exec/curl needed) */
+  async function callRabbitApi(path: string, method = "GET", body?: unknown): Promise<unknown> {
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
+    const resp = await fetch(`${rabbitApiUrl}${path}`, {
+      method,
+      headers,
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    });
+    if (!resp.ok) throw new Error(`API ${method} ${path} → ${resp.status}: ${await resp.text()}`);
+    return resp.json();
+  }
+
+  /** Execute an ACTION from Claude's structured response */
+  async function executeAction(action: Record<string, unknown>, userOpenId: string | undefined): Promise<void> {
+    const type = action.action as string;
+
+    if (type === "list_tasks") {
+      if (!userOpenId) { await sendToFeishu("⚠️ 无法识别你的用户 ID"); return; }
+      const result = await callRabbitApi(`/api/agent/tasks?open_id=${encodeURIComponent(userOpenId)}`) as { tasks: Array<{id: number; title: string; deadline: string | null; status: string}> };
+      const tasks = result.tasks ?? [];
+      if (tasks.length === 0) {
+        await sendToFeishu("✅ 你目前没有待办任务");
+      } else {
+        const lines = tasks.map((t, i) =>
+          `${i + 1}. 【${t.title}】${t.deadline ? ` 截止 ${t.deadline.slice(0, 10)}` : ""}`
+        );
+        await sendToFeishu(`📋 你的待办任务（${tasks.length} 项）：\n\n${lines.join("\n")}\n\n发送「完成 任务名」标记完成`);
+      }
+      return;
+    }
+
+    if (type === "complete_task") {
+      if (!userOpenId) { await sendToFeishu("⚠️ 无法识别你的用户 ID"); return; }
+      // First list tasks to find the matching one
+      const result = await callRabbitApi(`/api/agent/tasks?open_id=${encodeURIComponent(userOpenId)}`) as { tasks: Array<{id: number; title: string}> };
+      const tasks = result.tasks ?? [];
+      const taskName = (action.task_name as string | undefined)?.toLowerCase().trim() ?? "";
+      const proof = (action.proof as string | undefined) ?? "";
+
+      let target = tasks.find(t => t.title.toLowerCase() === taskName);
+      if (!target) target = tasks.find(t => t.title.toLowerCase().includes(taskName));
+      if (!target && tasks.length === 1) target = tasks[0]; // only one task, complete it
+
+      if (!target) {
+        if (tasks.length === 0) {
+          await sendToFeishu("✅ 你目前没有待办任务");
+        } else {
+          const list = tasks.map((t, i) => `${i + 1}. ${t.title}`).join("\n");
+          await sendToFeishu(`⚠️ 没找到「${taskName}」，你的待办任务是：\n\n${list}\n\n请发「完成 任务名」指定要完成哪个`);
+        }
+        return;
+      }
+
+      await callRabbitApi(`/api/agent/tasks/${target.id}/complete`, "POST", {
+        user_open_id: userOpenId,
+        proof,
+      });
+      await sendToFeishu(`✅ 任务「${target.title}」已标记为完成！${proof ? `\n📎 ${proof}` : ""}`);
+      return;
+    }
+
+    if (type === "create_task") {
+      const title = action.title as string;
+      const targetOpenId = action.target_open_id as string;
+      if (!title || !targetOpenId) { await sendToFeishu("⚠️ 创建任务需要任务名和被催办人"); return; }
+      const taskResult = await callRabbitApi("/api/agent/tasks", "POST", {
+        title,
+        target_open_id: targetOpenId,
+        reporter_open_id: userOpenId ?? null,
+        deadline: action.deadline ?? null,
+        note: action.note ?? null,
+      }) as { task: { id: number; title: string } };
+      await sendToFeishu(`📋 任务「${taskResult.task.title}」已创建，已通知执行人`);
+      return;
+    }
+
+    console.warn(`[rabbit-lark] unknown action type: ${type}`);
+  }
 
   const deliverReply = createNormalizedOutboundDeliverer(async (outPayload) => {
     if (!replyApiUrl) {
       console.warn("[rabbit-lark] no reply API URL available, cannot send reply");
       return;
     }
-    const replyText = outPayload.text;
+    const replyText = outPayload.text?.trim();
     if (!replyText) return;
 
-    const headers: Record<string, string> = { "Content-Type": "application/json" };
-    if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
-
-    try {
-      const resp = await fetch(replyApiUrl, {
-        method: "POST",
-        headers,
-        body: JSON.stringify({
-          chat_id: chatId,
-          content: replyText,
-          // Include message_id for reply threading if available
-          ...(messageId ? { reply_to_message_id: messageId } : {}),
-        }),
-      });
-      if (!resp.ok) {
-        const errText = await resp.text();
-        console.error(`[rabbit-lark] reply failed: ${resp.status} ${errText}`);
+    // Check if Claude returned a structured ACTION on the first line
+    const firstLine = replyText.split("\n")[0].trim();
+    if (firstLine.startsWith("ACTION:")) {
+      try {
+        const jsonStr = firstLine.slice("ACTION:".length).trim();
+        const action = JSON.parse(jsonStr) as Record<string, unknown>;
+        const userOpenId = payload.userContext?.openId;
+        await executeAction(action, userOpenId);
+        return; // action handled, don't send raw text
+      } catch (err) {
+        console.error("[rabbit-lark] failed to parse ACTION json:", err);
+        // Fall through to send as regular text
       }
-    } catch (err) {
-      console.error("[rabbit-lark] reply fetch error:", err);
     }
+
+    // Regular text reply
+    await sendToFeishu(replyText);
   });
 
   await core.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
