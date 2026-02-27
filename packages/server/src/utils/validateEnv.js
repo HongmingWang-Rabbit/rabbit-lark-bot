@@ -56,6 +56,9 @@ function validateEnv() {
   if (!process.env.AGENT_WEBHOOK_URL) {
     warnings.push('AGENT_WEBHOOK_URL not set - messages will not be forwarded to any agent');
   }
+  if (!process.env.AGENT_API_KEY) {
+    warnings.push('AGENT_API_KEY not set - /api/agent/send endpoint is unprotected and agent reply auth will fail if openclaw.json has rabbitApiKey set');
+  }
   if (!process.env.API_BASE_URL) {
     warnings.push('API_BASE_URL not set - reply_via.api will use localhost');
   }
@@ -70,6 +73,9 @@ function validateEnv() {
       if (!process.env.API_KEY || !process.env.FEISHU_ENCRYPT_KEY) {
         logger.error('Refusing to start: API_KEY and FEISHU_ENCRYPT_KEY are required in production');
         process.exit(1);
+      }
+      if (!process.env.AGENT_API_KEY) {
+        logger.warn('AGENT_API_KEY not set in production - agent callback endpoint /api/agent/send is unprotected');
       }
     } else {
       logger.warn('Security/Config warnings', { warnings });

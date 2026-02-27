@@ -123,24 +123,30 @@ POSTGRES_DB=rabbit_lark
 # 飞书应用
 FEISHU_APP_ID=cli_xxx
 FEISHU_APP_SECRET=your_app_secret
-FEISHU_ENCRYPT_KEY=your_encrypt_key    # 飞书事件加密密钥
+FEISHU_ENCRYPT_KEY=your_encrypt_key    # 飞书事件加密密钥（必须）
 
-# AI Agent
-AGENT_WEBHOOK_URL=http://host.docker.internal:18789/channels/lark/webhook
-API_BASE_URL=http://your-server:3456
+# 安全
+API_KEY=your_api_key                   # 管理 API 鉴权（生产环境必须）
+NEXT_PUBLIC_API_KEY=your_api_key       # 与 API_KEY 相同
+NEXT_PUBLIC_ADMIN_PASSWORD=your_pwd    # 管理后台登录密码
+
+# AI Agent（接 OpenClaw）
+AGENT_WEBHOOK_URL=http://host.docker.internal:18789/lark-webhook
+AGENT_API_KEY=your_agent_key           # 与 openclaw.json rabbitApiKey 相同
+API_BASE_URL=https://your-domain.com   # 必须是 HTTPS 公网域名
 ```
 
 **可选：**
 ```env
-# 任务提醒设置
-DEFAULT_DEADLINE_DAYS=3            # 默认截止天数（默认 3）
-DEFAULT_REMINDER_INTERVAL_HOURS=24 # 默认提醒间隔（默认 24 小时）
-REMINDER_CHECK_INTERVAL_MINUTES=15 # Cron 扫描频率（默认 15 分钟）
-
-# 其他
-API_KEY=your_api_key               # 管理 API 鉴权（留空则不鉴权）
-LOG_LEVEL=info                     # error / warn / info / debug
+DEFAULT_DEADLINE_DAYS=3
+DEFAULT_REMINDER_INTERVAL_HOURS=24
+REMINDER_CHECK_INTERVAL_MINUTES=15
+LOG_LEVEL=info
 ```
+
+> ⚠️ **`NEXT_PUBLIC_*` 变量**在 `next build` 时内联到 JS bundle，修改后必须重建镜像：
+> `docker compose build web && docker compose up -d web`
+> 单纯 `docker compose restart` 无效。
 
 ### 3. 启动服务
 
@@ -163,13 +169,16 @@ curl http://localhost:3456/health
 
 1. 打开 [飞书开放平台](https://open.feishu.cn/app) → 选择你的应用
 2. **添加应用能力** → 机器人
-3. **事件订阅** → 请求 URL：`http://YOUR_SERVER:3456/webhook/event`
+3. **事件订阅** → 请求 URL：`https://your-domain.com/webhook/event`
+   > ⚠️ 必须是 **HTTPS + 域名**，不能用 `http://IP:PORT`
+   > 端口 3456 只绑定在 127.0.0.1，外网不可直接访问，流量必须经 Nginx 反代
 4. **添加事件**：`im.message.receive_v1`
 5. **权限管理** → 开通以下权限：
    - `im:message` — 发送/接收消息
    - `im:message:send_as_bot` — 机器人发消息
-   - `contact:contact.base:readonly` — 获取用户姓名（需发布新版本生效）
+   - `contact:user.base:readonly` — 获取用户姓名/邮箱（需发布新版本生效）
 6. 发布应用版本
+7. 若服务器重启过，需回到「事件订阅」页面重新点击「验证」恢复推送
 
 ### 5. 接入 AI Agent
 
@@ -186,13 +195,17 @@ curl http://localhost:3456/health
 }
 ```
 
-Agent 通过 `POST /api/agent/send` 回复：
+Agent 通过 `POST /api/agent/send` 回复（需携带 `AGENT_API_KEY`）：
 
 ```bash
-curl -X POST http://your-server:3456/api/agent/send \
+curl -X POST https://your-domain.com/api/agent/send \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <AGENT_API_KEY>" \
   -d '{"chat_id": "oc_xxx", "content": "你好！"}'
 ```
+
+> `/api/agent/*` 使用 `AGENT_API_KEY` 鉴权，与管理 API 的 `API_KEY` 是两把不同的 key。
+> 详见 [docs/setup-openclaw.md](docs/setup-openclaw.md)。
 
 ---
 
@@ -335,10 +348,25 @@ docker exec rabbit-lark-db psql -U rabbit -d rabbit_lark \
 
 ---
 
+## ⚠️ 常见配置坑
+
+| 问题 | 原因 | 解决 |
+|------|------|------|
+| 飞书消息无响应 | Webhook URL 用了 `http://IP:port` | 改为 `https://域名/webhook/event` |
+| 服务器重启后飞书失联 | 飞书暂停了推送 | 去开发者后台重新「验证」URL |
+| 管理后台 401 | `NEXT_PUBLIC_API_KEY` 未在 build 时注入 | `docker compose build web && docker compose up -d web` |
+| `/api/agent/send` 401 | `AGENT_API_KEY` 与 `rabbitApiKey` 不一致 | 两边设为同一个值并重启 |
+| 改了 `.env` 没生效 | `docker compose restart` 不重读 `.env` | 改用 `docker compose up -d` |
+| 用户名为空 | 飞书 Contact API 权限未开通 | 添加权限并发布新版本 |
+
+详见 [docs/troubleshooting.md](docs/troubleshooting.md)。
+
 ## 文档
 
 - [架构设计](docs/architecture.md) — 系统架构、数据库 Schema、数据流
 - [API 文档](docs/api.md) — 完整 REST API 说明
+- [OpenClaw 集成](docs/setup-openclaw.md) — OpenClaw Agent 接入配置
+- [故障排查](docs/troubleshooting.md) — 常见问题和解决方案
 - [更新日志](CHANGELOG.md)
 
 ## License

@@ -6,13 +6,15 @@
 |----------|-------------|
 | [architecture.md](architecture.md) | System architecture, data flow, deployment |
 | [api.md](api.md) | Complete REST API reference |
+| [setup-openclaw.md](setup-openclaw.md) | OpenClaw AI Agent integration guide |
+| [troubleshooting.md](troubleshooting.md) | Common issues and solutions |
 | [edit-history/](edit-history/) | Daily development logs |
 
 ## Quick Links
 
 ### For Users
-- [Bot Commands](api.md#飞书机器人命令) - How to interact with the bot
-- [API Authentication](api.md#认证) - How to authenticate API requests
+- [Bot Commands](../README.md#催办任务系统) - Feishu bot commands
+- [Task Completion Format](troubleshooting.md#催办任务发送xxx-任务完成没反应) - Correct message format
 
 ### For Developers
 - [Architecture Overview](architecture.md#系统架构) - System structure
@@ -20,8 +22,9 @@
 - [Security](architecture.md#安全) - Auth and rate limiting
 
 ### For Operators
-- [Deployment](architecture.md#部署) - Docker setup
-- [Environment Variables](../CLAUDE.md) - See CLAUDE.md for env var reference
+- [OpenClaw Setup](setup-openclaw.md) - Step-by-step AI agent integration
+- [Troubleshooting](troubleshooting.md) - Common deployment pitfalls
+- [Environment Variables](../.env.example) - Annotated env var reference
 
 ## Contributing
 
