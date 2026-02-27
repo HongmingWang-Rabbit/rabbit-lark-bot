@@ -13,8 +13,13 @@ const express = require('express');
 const router = express.Router();
 const users = require('../db/users');
 const { listFeatures, resolveFeatures, getFeature } = require('../features');
+const { audit } = require('../db');
 const logger = require('../utils/logger');
 const { safeErrorMessage } = require('../utils/safeError');
+
+function resolveActor(req) {
+  return req.body?.actorId || req.query?.actorId || 'web_admin';
+}
 
 // ── List available features (must be before /:userId routes) ───────────────
 
@@ -66,6 +71,7 @@ router.post('/', async (req, res) => {
 
     const user = await users.upsert({ userId, openId, name, email, phone, role, configs });
     logger.info('User upserted', { userId, role: user.role });
+    audit.log({ userId: resolveActor(req), action: 'upsert_user', targetType: 'user', targetId: userId, details: { role } }).catch(() => {});
     res.json({ success: true, user: formatUser(user, true) });
   } catch (err) {
     logger.error('Upsert user failed', { error: err.message });
@@ -90,6 +96,11 @@ router.patch('/:userId', async (req, res) => {
     }
 
     logger.info('User updated', { userId });
+    const changes = {};
+    if (role !== undefined) changes.role = role;
+    if (configs) changes.configs = configs;
+    if (name !== undefined || email !== undefined || phone !== undefined) changes.profile = { name, email, phone };
+    audit.log({ userId: resolveActor(req), action: 'update_user', targetType: 'user', targetId: userId, details: changes }).catch(() => {});
     res.json({ success: true, user: formatUser(user, true) });
   } catch (err) {
     logger.error('Update user failed', { error: err.message });
@@ -113,6 +124,7 @@ router.patch('/:userId/features/:featureId', async (req, res) => {
 
     const user = await users.setFeature(userId, featureId, enabled);
     logger.info('Feature updated', { userId, featureId, enabled });
+    audit.log({ userId: resolveActor(req), action: 'set_feature', targetType: 'user', targetId: userId, details: { featureId, enabled } }).catch(() => {});
     res.json({ success: true, user: formatUser(user, true) });
   } catch (err) {
     logger.error('Set feature failed', { error: err.message });
@@ -127,6 +139,7 @@ router.delete('/:userId', async (req, res) => {
     const removed = await users.remove(req.params.userId);
     if (!removed) return res.status(404).json({ error: 'User not found' });
     logger.info('User removed', { userId: req.params.userId });
+    audit.log({ userId: resolveActor(req), action: 'remove_user', targetType: 'user', targetId: req.params.userId, details: {} }).catch(() => {});
     res.json({ success: true });
   } catch (err) {
     logger.error('Remove user failed', { error: err.message });

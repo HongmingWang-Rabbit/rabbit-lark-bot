@@ -7,6 +7,12 @@ const reminderService = require('../services/reminder');
 const feishu = require('../feishu/client');
 const { safeErrorMessage } = require('../utils/safeError');
 
+// Resolve a stable actor identifier for audit logs from web/API requests.
+// Web UI doesn't have user sessions, so we use 'web_admin' as the actor.
+function resolveActor(req) {
+  return req.body?.userId || req.query?.userId || 'web_admin';
+}
+
 // ============ Dashboard ============
 
 router.get('/dashboard', async (req, res) => {
@@ -89,7 +95,7 @@ router.post('/tasks', async (req, res) => {
       assigneeName: targetUser.name || null,
       deadline,
       note,
-      creatorId,
+      creatorId: creatorId || resolveActor(req),
       reporterOpenId: resolvedReporterOpenId,
       reminderIntervalHours: reminderIntervalHours !== undefined
         ? Math.min(8760, Math.max(0, Math.floor(Number(reminderIntervalHours) || 0)))
@@ -108,7 +114,8 @@ router.post('/tasks/:id/complete', async (req, res) => {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) return res.status(400).json({ error: 'Invalid task ID' });
     const { proof, userId } = req.body;
-    const task = await reminderService.completeTask(id, proof, userId);
+    const actor = userId || resolveActor(req);
+    const task = await reminderService.completeTask(id, proof, actor);
     if (!task) return res.status(404).json({ error: '任务不存在或已完成' });
     res.json({ success: true, task });
   } catch (err) {
@@ -122,7 +129,8 @@ router.delete('/tasks/:id', async (req, res) => {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) return res.status(400).json({ error: 'Invalid task ID' });
     const { userId } = req.query;
-    const task = await reminderService.deleteTask(id, userId);
+    const actor = userId || resolveActor(req);
+    const task = await reminderService.deleteTask(id, actor);
     if (!task) return res.status(404).json({ error: '任务不存在' });
     res.json({ success: true, task });
   } catch (err) {
@@ -150,6 +158,13 @@ router.post('/admins', async (req, res) => {
       return res.status(400).json({ error: 'userId 或 email 必填' });
     }
     const admin = await admins.add({ userId, email, name, role });
+    audit.log({
+      userId: resolveActor(req),
+      action: 'add_admin',
+      targetType: 'admin',
+      targetId: userId || email,
+      details: { email, name, role },
+    }).catch(() => {});
     res.json(admin);
   } catch (err) {
     res.status(500).json({ error: safeErrorMessage(err) });
@@ -160,6 +175,13 @@ router.post('/admins', async (req, res) => {
 router.delete('/admins/:userId', async (req, res) => {
   try {
     const removed = await admins.remove(req.params.userId);
+    audit.log({
+      userId: resolveActor(req),
+      action: 'remove_admin',
+      targetType: 'admin',
+      targetId: req.params.userId,
+      details: { removed: removed?.email || null },
+    }).catch(() => {});
     res.json({ success: true, removed });
   } catch (err) {
     res.status(500).json({ error: safeErrorMessage(err) });
@@ -192,6 +214,13 @@ router.put('/settings/:key', async (req, res) => {
     }
     const { value, description } = req.body;
     await settings.set(key, value, description);
+    audit.log({
+      userId: resolveActor(req),
+      action: 'update_setting',
+      targetType: 'setting',
+      targetId: key,
+      details: { value },
+    }).catch(() => {});
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: safeErrorMessage(err) });
