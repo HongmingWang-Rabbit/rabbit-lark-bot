@@ -4,6 +4,7 @@ import { useState } from 'react';
 import useSWR, { mutate } from 'swr';
 import { api, SWR_KEYS, ScheduledTask, User } from '@/lib/api';
 import AdminGuard from '@/components/AdminGuard';
+import UserCombobox from '@/components/UserCombobox';
 
 // ── constants ────────────────────────────────────────────────────────────────
 
@@ -119,6 +120,7 @@ function ScheduledTasksContent() {
       {showForm && (
         <ScheduledTaskForm
           initial={editingTask}
+          users={usersData ?? []}
           onSuccess={handleFormSuccess}
           onCancel={handleFormClose}
         />
@@ -301,10 +303,12 @@ function ScheduledTaskRow({
 
 function ScheduledTaskForm({
   initial,
+  users,
   onSuccess,
   onCancel,
 }: {
   initial: ScheduledTask | null;
+  users: User[];
   onSuccess: () => void;
   onCancel: () => void;
 }) {
@@ -344,10 +348,10 @@ function ScheduledTaskForm({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!form.name || !form.title || !form.targetOpenId || !form.schedule) {
-      setError('名称、催办标题、被催办人、执行时间均为必填');
-      return;
-    }
+    if (!form.name) { setError('请填写任务名称'); return; }
+    if (!form.title) { setError('请填写催办标题'); return; }
+    if (!form.targetOpenId) { setError('请选择被催办人'); return; }
+    if (!form.schedule) { setError('请设置执行时间'); return; }
     setLoading(true);
     setError(null);
     try {
@@ -408,33 +412,31 @@ function ScheduledTaskForm({
           />
         </div>
 
-        {/* 被催办人 open_id */}
+        {/* 被催办人 */}
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">
-            被催办人 open_id *
-            <span className="ml-1 text-gray-400 font-normal text-xs">（ou_xxx 格式）</span>
+            被催办人 <span className="text-red-500">*</span>
           </label>
-          <input
-            type="text" required
-            value={form.targetOpenId}
-            onChange={e => setForm({ ...form, targetOpenId: e.target.value })}
-            placeholder="ou_xxxxxxxxxxxxxxxx"
-            className="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent font-mono text-sm"
+          <UserCombobox
+            value={form.targetOpenId || null}
+            onChange={v => setForm({ ...form, targetOpenId: v ?? '' })}
+            users={users}
+            placeholder="搜索姓名或邮箱…"
+            required
           />
         </div>
 
-        {/* 报告人 open_id */}
+        {/* 报告人 */}
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">
-            报告人 open_id
+            报告人
             <span className="ml-1 text-gray-400 font-normal text-xs">（任务完成时通知，可选）</span>
           </label>
-          <input
-            type="text"
-            value={form.reporterOpenId}
-            onChange={e => setForm({ ...form, reporterOpenId: e.target.value })}
-            placeholder="ou_xxxxxxxxxxxxxxxx（可选）"
-            className="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent font-mono text-sm"
+          <UserCombobox
+            value={form.reporterOpenId || null}
+            onChange={v => setForm({ ...form, reporterOpenId: v ?? '' })}
+            users={users}
+            placeholder="搜索姓名或邮箱…（可选）"
           />
         </div>
 
