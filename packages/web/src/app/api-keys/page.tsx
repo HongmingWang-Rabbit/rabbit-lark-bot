@@ -4,8 +4,9 @@ import { useState } from 'react';
 import useSWR, { mutate } from 'swr';
 import { api, AgentApiKey, SWR_KEYS } from '@/lib/api';
 import { LoadingState, ErrorState } from '@/components/StatusStates';
+import AdminGuard from '@/components/AdminGuard';
 
-export default function ApiKeysPage() {
+function ApiKeysPage() {
   const { data: keys, error, isLoading } = useSWR<AgentApiKey[]>(SWR_KEYS.apiKeys, api.getApiKeys);
 
   if (isLoading) return <LoadingState />;
@@ -196,4 +197,8 @@ function KeyRow({ apiKey }: { apiKey: AgentApiKey }) {
       </td>
     </tr>
   );
+}
+
+export default function ApiKeysPageGuarded() {
+  return <AdminGuard><ApiKeysPage /></AdminGuard>;
 }

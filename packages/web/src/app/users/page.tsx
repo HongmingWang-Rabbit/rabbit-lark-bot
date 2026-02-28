@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, useCallback, useId, cloneElement, type Ref
 import useSWR, { mutate } from 'swr';
 import { api, SWR_KEYS, User, Feature, UserRole } from '@/lib/api';
 import { LoadingState, ErrorState } from '@/components/StatusStates';
+import AdminGuard from '@/components/AdminGuard';
 
 const ROLE_LABELS: Record<UserRole, string> = {
   superadmin: '超级管理员',
@@ -17,7 +18,7 @@ const ROLE_COLORS: Record<UserRole, string> = {
   user: 'bg-gray-100 text-gray-600',
 };
 
-export default function UsersPage() {
+function UsersPage() {
   const { data: users = [], error: usersErr, isLoading } = useSWR(SWR_KEYS.users, api.getUsers);
   const { data: features = [] } = useSWR(SWR_KEYS.features, api.getFeatures);
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -588,3 +589,7 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
   );
 }
 
+
+export default function UsersPageGuarded() {
+  return <AdminGuard><UsersPage /></AdminGuard>;
+}

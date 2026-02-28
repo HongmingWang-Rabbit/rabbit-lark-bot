@@ -21,11 +21,13 @@ export default function NavBar() {
           </Link>
           <div className="flex items-center gap-6">
             <NavLink href="/" active={pathname === '/'}>Dashboard</NavLink>
-            <NavLink href="/users" active={pathname.startsWith('/users')}>用户管理</NavLink>
             <NavLink href="/tasks" active={pathname.startsWith('/tasks')}>任务</NavLink>
-            <NavLink href="/settings" active={pathname.startsWith('/settings')}>设置</NavLink>
             {isAdmin && (
-              <NavLink href="/api-keys" active={pathname.startsWith('/api-keys')}>API Keys</NavLink>
+              <>
+                <NavLink href="/users" active={pathname.startsWith('/users')}>用户管理</NavLink>
+                <NavLink href="/settings" active={pathname.startsWith('/settings')}>设置</NavLink>
+                <NavLink href="/api-keys" active={pathname.startsWith('/api-keys')}>API Keys</NavLink>
+              </>
             )}
             <div className="flex items-center gap-3">
               {user && (

@@ -3,8 +3,9 @@
 import { useState } from 'react';
 import useSWR, { mutate } from 'swr';
 import { api, Setting } from '@/lib/api';
+import AdminGuard from '@/components/AdminGuard';
 
-export default function SettingsPage() {
+function SettingsPage() {
   const { data: settings, error, isLoading } = useSWR<Setting[]>('/settings', api.getSettings);
 
   if (isLoading) return <LoadingState />;
@@ -160,4 +161,8 @@ function SystemInfo() {
       </div>
     </div>
   );
+}
+
+export default function SettingsPageGuarded() {
+  return <AdminGuard><SettingsPage /></AdminGuard>;
 }
