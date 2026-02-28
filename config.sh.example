@@ -1,8 +1,0 @@
-#!/bin/bash
-# 飞书应用配置 - 复制此文件为 config.sh 并填入实际值
-export FEISHU_APP_ID="cli_xxxxx"
-export FEISHU_APP_SECRET="xxxxx"
-
-# 催办表格配置
-export REMINDER_APP_TOKEN="xxxxx"
-export REMINDER_TABLE_ID="xxxxx"

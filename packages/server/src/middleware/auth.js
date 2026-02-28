@@ -192,6 +192,4 @@ module.exports = {
   feishuWebhookAuth,
   sessionAuth,
   agentAuth,
-  // Legacy export for backward compatibility
-  apiAuth: sessionAuth,
 };

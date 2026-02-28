@@ -152,8 +152,7 @@ router.post('/password', passwordRateLimit, async (req, res) => {
       return res.status(400).json({ error: 'Password required' });
     }
 
-    // Check server-side password (ADMIN_PASSWORD takes precedence over legacy NEXT_PUBLIC_ADMIN_PASSWORD)
-    const expectedPassword = process.env.ADMIN_PASSWORD || process.env.NEXT_PUBLIC_ADMIN_PASSWORD;
+    const expectedPassword = process.env.ADMIN_PASSWORD;
     if (!expectedPassword) {
       return res.status(500).json({ error: 'Password login not configured' });
     }

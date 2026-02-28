@@ -31,46 +31,27 @@
 
 ---
 
-## 管理后台显示「加载失败」/ 401
+## 管理后台显示 401 / 无法登录
 
 ### 症状
-浏览器控制台显示 `GET /api/dashboard 401 Unauthorized`。
+浏览器控制台显示 `GET /api/dashboard 401 Unauthorized`，或登录后立即跳回登录页。
 
-### 原因：`NEXT_PUBLIC_API_KEY` 没有在 build 时注入
-
-Next.js 的 `NEXT_PUBLIC_*` 变量在 **`next build` 时**内联到 JS bundle 中，运行时环境变量对已构建的 bundle 无效。
-
-**错误做法（不生效）：**
-```bash
-# 改了 .env 后只重启容器
-docker compose restart web     # ❌ bundle 里的 key 没变
-docker compose up -d web       # ❌ 镜像没重建，bundle 还是旧的
-```
-
-**正确做法：**
-```bash
-# 必须重建镜像
-docker compose build web && docker compose up -d web   # ✅
-```
-
-同样受影响的变量：`NEXT_PUBLIC_ADMIN_PASSWORD`、`NEXT_PUBLIC_API_URL`
-
----
-
-## 管理后台显示「管理后台未配置」
-
-### 症状
-进入管理后台显示「请设置环境变量 `NEXT_PUBLIC_ADMIN_PASSWORD` 后重启服务」。
-
-### 原因
-同上，`NEXT_PUBLIC_ADMIN_PASSWORD` 没有在 build 时传入，bundle 里是空字符串。
+### 原因 1：`JWT_SECRET` 未设置
+生产环境必须设置 `JWT_SECRET` 环境变量（32+ 字节随机值），否则服务端无法签发/验证 JWT。
 
 **修复：**
 ```bash
-# 确认 .env 里有 NEXT_PUBLIC_ADMIN_PASSWORD=xxx
-# 然后重建镜像
-docker compose build web && docker compose up -d web
+# .env 中添加
+JWT_SECRET=your_random_secret_at_least_32_bytes
+# 重启 server
+docker compose up -d server
 ```
+
+### 原因 2：Session 已过期
+JWT cookie 有效期为 7 天，过期后需重新登录。
+
+### 原因 3：Cookie 未正确传递
+确保浏览器没有阻止第三方 cookie，且前端请求包含 `credentials: 'include'`。
 
 ---
 

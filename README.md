@@ -126,14 +126,13 @@ FEISHU_APP_SECRET=your_app_secret
 FEISHU_ENCRYPT_KEY=your_encrypt_key    # 飞书事件加密密钥（必须）
 
 # 安全
-API_KEY=your_api_key                   # 管理 API 鉴权（生产环境必须）
-NEXT_PUBLIC_API_KEY=your_api_key       # 与 API_KEY 相同
-NEXT_PUBLIC_ADMIN_PASSWORD=your_pwd    # 管理后台登录密码
+JWT_SECRET=your_random_secret_32bytes  # JWT 签名密钥（生产环境必填）
+ADMIN_PASSWORD=your_pwd                # 管理后台密码登录（可选，飞书 OAuth 为主）
+API_KEY=your_api_key                   # 管理 API 鉴权（旧版兼容，JWT 优先）
 
-# AI Agent（接 OpenClaw）
-AGENT_WEBHOOK_URL=http://host.docker.internal:18789/lark-webhook
-AGENT_API_KEY=your_agent_key           # 与 openclaw.json rabbitApiKey 相同
-API_BASE_URL=https://your-domain.com   # 必须是 HTTPS 公网域名
+# AI Agent
+ANTHROPIC_API_KEY=sk-ant-xxx           # Anthropic API Key（AI 功能必填）
+AGENT_API_KEY=your_agent_key           # /api/agent/* 端点认证
 ```
 
 **可选：**
@@ -144,9 +143,7 @@ REMINDER_CHECK_INTERVAL_MINUTES=15
 LOG_LEVEL=info
 ```
 
-> ⚠️ **`NEXT_PUBLIC_*` 变量**在 `next build` 时内联到 JS bundle，修改后必须重建镜像：
-> `docker compose build web && docker compose up -d web`
-> 单纯 `docker compose restart` 无效。
+> ⚠️ 认证已迁移到服务端 JWT session cookie，不再需要 `NEXT_PUBLIC_API_KEY` 和 `NEXT_PUBLIC_ADMIN_PASSWORD`。
 
 ### 3. 启动服务
 
@@ -356,7 +353,7 @@ docker exec rabbit-lark-db psql -U rabbit -d rabbit_lark \
 |------|------|------|
 | 飞书消息无响应 | Webhook URL 用了 `http://IP:port` | 改为 `https://域名/webhook/event` |
 | 服务器重启后飞书失联 | 飞书暂停了推送 | 去开发者后台重新「验证」URL |
-| 管理后台 401 | `NEXT_PUBLIC_API_KEY` 未在 build 时注入 | `docker compose build web && docker compose up -d web` |
+| 管理后台 401 | `JWT_SECRET` 未设置或 session 已过期 | 设置 `JWT_SECRET` 并重新登录 |
 | `/api/agent/send` 401 | `AGENT_API_KEY` 与 `rabbitApiKey` 不一致 | 两边设为同一个值并重启 |
 | 改了 `.env` 没生效 | `docker compose restart` 不重读 `.env` | 改用 `docker compose up -d` |
 | 用户名为空 | 飞书 Contact API 权限未开通 | 添加权限并发布新版本 |

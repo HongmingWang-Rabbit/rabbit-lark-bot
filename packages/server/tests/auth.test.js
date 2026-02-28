@@ -32,9 +32,6 @@ const { verifyFeishuSignature, sessionAuth, agentAuth, feishuWebhookAuth } = req
 const { verifyJwt } = require('../src/utils/jwt');
 const apiKeys = require('../src/db/apiKeys');
 
-// Legacy alias
-const apiAuth = sessionAuth;
-
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 function mockReqRes(overrides = {}) {
@@ -105,7 +102,7 @@ describe('verifyFeishuSignature', () => {
   });
 });
 
-// ── sessionAuth (apiAuth) ────────────────────────────────────────────────────
+// ── sessionAuth (sessionAuth) ────────────────────────────────────────────────────
 
 describe('sessionAuth', () => {
   const OLD_ENV = process.env;
@@ -125,7 +122,7 @@ describe('sessionAuth', () => {
   it('skips auth in development mode without REQUIRE_AUTH', async () => {
     process.env.NODE_ENV = 'development';
     const { req, res, next } = mockReqRes();
-    await apiAuth(req, res, next);
+    await sessionAuth(req, res, next);
     expect(next).toHaveBeenCalled();
     expect(res.status).not.toHaveBeenCalled();
   });
@@ -136,7 +133,7 @@ describe('sessionAuth', () => {
     process.env.API_KEY = 'my-key';
     const { req, res, next } = mockReqRes();
     // No credentials provided
-    await apiAuth(req, res, next);
+    await sessionAuth(req, res, next);
     expect(next).not.toHaveBeenCalled();
     expect(res.status).toHaveBeenCalledWith(401);
   });
@@ -144,7 +141,7 @@ describe('sessionAuth', () => {
   it('rejects all requests in production when neither JWT_SECRET nor API_KEY is set', async () => {
     process.env.NODE_ENV = 'production';
     const { req, res, next } = mockReqRes();
-    await apiAuth(req, res, next);
+    await sessionAuth(req, res, next);
     expect(next).not.toHaveBeenCalled();
     expect(res.status).toHaveBeenCalledWith(500);
     expect(res.json).toHaveBeenCalledWith({ error: 'Server misconfigured' });
@@ -153,7 +150,7 @@ describe('sessionAuth', () => {
   it('allows unprotected access when no auth configured in development mode', async () => {
     process.env.NODE_ENV = 'development';
     const { req, res, next } = mockReqRes();
-    await apiAuth(req, res, next);
+    await sessionAuth(req, res, next);
     expect(next).toHaveBeenCalled();
   });
 
@@ -163,7 +160,7 @@ describe('sessionAuth', () => {
     const { req, res, next } = mockReqRes({
       cookies: { rlk_session: 'valid-token' },
     });
-    await apiAuth(req, res, next);
+    await sessionAuth(req, res, next);
     expect(next).toHaveBeenCalled();
     expect(req.user).toEqual({ sub: 'user1', name: 'Test', role: 'admin' });
   });
@@ -175,7 +172,7 @@ describe('sessionAuth', () => {
       cookies: { rlk_session: 'expired-token' },
       headers: { 'x-api-key': 'my-secret-key' },
     });
-    await apiAuth(req, res, next);
+    await sessionAuth(req, res, next);
     expect(next).toHaveBeenCalled();
     expect(req.user).toEqual({ sub: 'api_key_user', name: 'API Key', role: 'superadmin' });
   });
@@ -185,7 +182,7 @@ describe('sessionAuth', () => {
     const { req, res, next } = mockReqRes({
       headers: { 'x-api-key': 'my-secret-key' },
     });
-    await apiAuth(req, res, next);
+    await sessionAuth(req, res, next);
     expect(next).toHaveBeenCalled();
     expect(req.user).toEqual({ sub: 'api_key_user', name: 'API Key', role: 'superadmin' });
   });
@@ -195,7 +192,7 @@ describe('sessionAuth', () => {
     const { req, res, next } = mockReqRes({
       headers: { 'x-api-key': 'wrong-key-wrong' },
     });
-    await apiAuth(req, res, next);
+    await sessionAuth(req, res, next);
     expect(next).not.toHaveBeenCalled();
     expect(res.status).toHaveBeenCalledWith(401);
   });
@@ -205,7 +202,7 @@ describe('sessionAuth', () => {
     const { req, res, next } = mockReqRes({
       headers: { 'x-api-key': 'short' },
     });
-    await apiAuth(req, res, next);
+    await sessionAuth(req, res, next);
     expect(next).not.toHaveBeenCalled();
     expect(res.status).toHaveBeenCalledWith(401);
   });
@@ -215,7 +212,7 @@ describe('sessionAuth', () => {
     const { req, res, next } = mockReqRes({
       headers: { authorization: 'Bearer my-secret-key' },
     });
-    await apiAuth(req, res, next);
+    await sessionAuth(req, res, next);
     expect(next).toHaveBeenCalled();
     expect(req.user).toEqual({ sub: 'api_key_user', name: 'API Key', role: 'superadmin' });
   });
@@ -225,7 +222,7 @@ describe('sessionAuth', () => {
     const { req, res, next } = mockReqRes({
       headers: { authorization: 'Bearer wrong-key-wrong' },
     });
-    await apiAuth(req, res, next);
+    await sessionAuth(req, res, next);
     expect(next).not.toHaveBeenCalled();
     expect(res.status).toHaveBeenCalledWith(401);
   });
@@ -233,7 +230,7 @@ describe('sessionAuth', () => {
   it('returns 401 when no credentials provided and API_KEY is set', async () => {
     process.env.API_KEY = 'my-secret-key';
     const { req, res, next } = mockReqRes();
-    await apiAuth(req, res, next);
+    await sessionAuth(req, res, next);
     expect(next).not.toHaveBeenCalled();
     expect(res.status).toHaveBeenCalledWith(401);
     expect(res.json).toHaveBeenCalledWith({ error: 'Unauthorized' });
