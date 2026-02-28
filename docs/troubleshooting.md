@@ -82,7 +82,8 @@ Server 日志显示 `Anthropic API error`。
 
 | Key | 用途 | 配置位置 |
 |-----|------|---------|
-| `API_KEY` | Web 管理后台 API 鉴权 | `.env` |
+| `JWT_SECRET` | Web 管理后台 JWT session 签名 | `.env` |
+| `API_KEY` | Web 管理后台 API 鉴权（旧版兼容） | `.env` |
 | `AGENT_API_KEY` | `/api/agent/*` 端点的认证 key | `.env` |
 
 **修复：** 确保外部调用者使用 `AGENT_API_KEY` 的值作为 Bearer token。
@@ -160,11 +161,19 @@ node scripts/enrich-users.js
 
 ---
 
-## AI 功能接入检查清单
+## 部署检查清单
 
+### 认证
+- [ ] `.env` 中设置 `JWT_SECRET`（生产环境必填，32+ 字节随机值）
+- [ ] `.env` 中设置 `ADMIN_PASSWORD`（密码登录备选方案，可选）
+- [ ] 飞书 OAuth：配置 `FEISHU_OAUTH_REDIRECT_URI`，并在飞书开放平台安全设置中添加回调 URL
+
+### AI 功能
 - [ ] `.env` 中设置 `ANTHROPIC_API_KEY`（必填，缺失时 AI 功能禁用）
-- [ ] `.env` 中设置 `AGENT_API_KEY`（推荐，保护 `/api/agent/*` 端点）
+- [ ] `.env` 中设置 `AGENT_API_KEY`（推荐，保护 `/api/agent/*` 端点；或通过管理后台创建 DB-backed API Key）
+- [ ] 确认 `GET /api/agent/status` 返回 `"configured": true`
+
+### 基础设施
 - [ ] 飞书应用 webhook URL 使用 HTTPS 域名（`https://your-domain.com/webhook/event`）
 - [ ] 飞书应用已开通 Contact API 权限（用于用户名/邮箱解析）
-- [ ] 数据库已执行 `008_add_conversation_history.sql` 迁移
-- [ ] 确认 `GET /api/agent/status` 返回 `"configured": true`
+- [ ] 数据库已执行所有迁移（001-009）

@@ -14,7 +14,7 @@
 
 ### For Users
 - [Bot Commands](../README.md#催办任务系统) - Feishu bot commands
-- [Task Completion Format](troubleshooting.md#催办任务发送xxx-任务完成没反应) - Correct message format
+- [Task Completion Format](troubleshooting.md#催办任务完成命令格式) - Correct message format
 
 ### For Developers
 - [Architecture Overview](architecture.md#系统架构) - System structure
