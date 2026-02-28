@@ -153,17 +153,17 @@ function ScheduledTaskTable({
 }) {
   return (
     <div className="bg-white rounded-lg shadow overflow-x-auto">
-      <table className="w-full min-w-[900px]" aria-label="定时任务列表">
+      <table className="w-full min-w-[860px]" aria-label="定时任务列表">
         <thead className="bg-gray-50">
           <tr>
-            <th className="px-4 py-3 text-left text-sm font-medium text-gray-500">名称</th>
+            <th className="px-4 py-3 text-left text-sm font-medium text-gray-500 whitespace-nowrap w-36">名称</th>
             <th className="px-4 py-3 text-left text-sm font-medium text-gray-500">催办标题</th>
-            <th className="px-4 py-3 text-left text-sm font-medium text-gray-500">被催办人</th>
-            <th className="px-4 py-3 text-left text-sm font-medium text-gray-500">执行时间</th>
-            <th className="px-4 py-3 text-left text-sm font-medium text-gray-500">优先级</th>
-            <th className="px-4 py-3 text-left text-sm font-medium text-gray-500">状态</th>
-            <th className="px-4 py-3 text-left text-sm font-medium text-gray-500">上次执行</th>
-            <th className="px-4 py-3 text-left text-sm font-medium text-gray-500">操作</th>
+            <th className="px-4 py-3 text-left text-sm font-medium text-gray-500 whitespace-nowrap w-32">被催办人</th>
+            <th className="px-4 py-3 text-left text-sm font-medium text-gray-500 whitespace-nowrap w-44">执行时间</th>
+            <th className="px-4 py-3 text-left text-sm font-medium text-gray-500 whitespace-nowrap w-20">优先级</th>
+            <th className="px-4 py-3 text-left text-sm font-medium text-gray-500 whitespace-nowrap w-16">状态</th>
+            <th className="px-4 py-3 text-left text-sm font-medium text-gray-500 whitespace-nowrap w-28">上次执行</th>
+            <th className="px-4 py-3 text-left text-sm font-medium text-gray-500 whitespace-nowrap w-20">操作</th>
           </tr>
         </thead>
         <tbody className="divide-y">
@@ -221,33 +221,50 @@ function ScheduledTaskRow({
     ? new Date(task.last_run_at).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })
     : '—';
 
+  const assigneeName = userMap[task.target_open_id] || task.target_open_id;
+
   return (
     <tr className={`hover:bg-gray-50 ${loading ? 'opacity-50' : ''}`}>
-      <td className="px-4 py-3 font-medium">{task.name}</td>
-      <td className="px-4 py-3 text-gray-700">
-        {task.title}
-        {task.note && <p className="text-xs text-gray-400 mt-0.5">{task.note}</p>}
-      </td>
-      <td className="px-4 py-3">
-        <span className="text-sm">{userMap[task.target_open_id] || task.target_open_id}</span>
-        {userMap[task.target_open_id] && (
-          <span className="block text-xs text-gray-400 font-mono">{task.target_open_id}</span>
+      {/* 名称 */}
+      <td className="px-4 py-2 font-medium text-sm whitespace-nowrap">{task.name}</td>
+
+      {/* 催办标题 + 备注（截断） */}
+      <td className="px-4 py-2 max-w-xs">
+        <p className="text-sm text-gray-800 truncate">{task.title}</p>
+        {task.note && (
+          <p className="text-xs text-gray-400 truncate" title={task.note}>{task.note}</p>
         )}
       </td>
-      <td className="px-4 py-3">
-        <span className="text-xs font-mono bg-gray-100 px-1.5 py-0.5 rounded">{task.schedule}</span>
-        <span className="text-xs text-gray-400 ml-1">{task.timezone}</span>
+
+      {/* 被催办人 — 只显示名字，hover 可看 open_id */}
+      <td className="px-4 py-2 whitespace-nowrap">
+        <span
+          className="text-sm font-medium"
+          title={task.target_open_id}
+        >
+          {assigneeName}
+        </span>
       </td>
-      <td className="px-4 py-3">
+
+      {/* 执行时间 — cron + timezone 同一行 */}
+      <td className="px-4 py-2 whitespace-nowrap">
+        <span className="text-xs font-mono bg-gray-100 px-1.5 py-0.5 rounded">{task.schedule}</span>
+        <span className="text-xs text-gray-400 block mt-0.5">{task.timezone}</span>
+      </td>
+
+      {/* 优先级 */}
+      <td className="px-4 py-2 whitespace-nowrap">
         <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${badge.className}`}>
           {badge.label}
         </span>
       </td>
-      <td className="px-4 py-3">
+
+      {/* 状态 */}
+      <td className="px-4 py-2 whitespace-nowrap">
         <button
           onClick={handleToggle}
           disabled={loading}
-          className={`text-xs px-2 py-0.5 rounded font-medium transition-colors ${
+          className={`text-xs px-2 py-0.5 rounded font-medium transition-colors whitespace-nowrap ${
             task.enabled
               ? 'bg-green-100 text-green-700 hover:bg-green-200'
               : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
@@ -256,12 +273,15 @@ function ScheduledTaskRow({
           {task.enabled ? '✅ 启用' : '⏸ 停用'}
         </button>
       </td>
-      <td className="px-4 py-3 text-xs text-gray-400">{lastRun}</td>
-      <td className="px-4 py-3">
-        <div className="flex gap-2 items-center">
+
+      {/* 上次执行 */}
+      <td className="px-4 py-2 text-xs text-gray-400 whitespace-nowrap">{lastRun}</td>
+
+      {/* 操作 */}
+      <td className="px-4 py-2">
+        <div className="flex gap-2 items-center whitespace-nowrap">
           {confirming ? (
             <>
-              <span className="text-xs text-gray-500">确认删除？</span>
               <button
                 onClick={handleDelete}
                 disabled={loading}
@@ -281,14 +301,14 @@ function ScheduledTaskRow({
             <>
               <button
                 onClick={() => onEdit(task)}
-                className="text-blue-600 hover:text-blue-800 text-sm"
+                className="text-blue-600 hover:text-blue-800 text-xs font-medium"
               >
                 编辑
               </button>
               <button
                 onClick={() => setConfirming(true)}
                 disabled={loading}
-                className="text-red-600 hover:text-red-800 text-sm disabled:opacity-50"
+                className="text-red-600 hover:text-red-800 text-xs font-medium disabled:opacity-50"
               >
                 删除
               </button>
