@@ -21,6 +21,47 @@ const feishu = require('../feishu/client');
 const MODEL = 'claude-haiku-4-5-20251001'; // cheapest & fastest
 const MAX_HISTORY = 20;        // messages per chat to keep
 const MAX_TOOL_ROUNDS = 5;     // prevent infinite loops
+const MAX_CONCURRENT_AGENTS = 10; // prevent unbounded Anthropic API calls under load
+
+// ---------------------------------------------------------------------------
+// Lazy singleton Anthropic client (avoids allocating per request)
+// ---------------------------------------------------------------------------
+
+let _anthropicClient = null;
+
+function getClient() {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) return null;
+  if (!_anthropicClient) {
+    _anthropicClient = new Anthropic({ apiKey });
+  }
+  return _anthropicClient;
+}
+
+// ---------------------------------------------------------------------------
+// Concurrency semaphore — limits parallel agent calls to avoid exhausting
+// connections or hitting Anthropic rate limits under load.
+// ---------------------------------------------------------------------------
+
+let _activeAgents = 0;
+const _waitQueue = [];
+
+function acquireSlot() {
+  if (_activeAgents < MAX_CONCURRENT_AGENTS) {
+    _activeAgents++;
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => _waitQueue.push(resolve));
+}
+
+function releaseSlot() {
+  if (_waitQueue.length > 0) {
+    const next = _waitQueue.shift();
+    next();
+  } else {
+    _activeAgents--;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Conversation history (PostgreSQL)
@@ -38,19 +79,20 @@ async function getHistory(chatId) {
 }
 
 async function appendHistory(chatId, role, content) {
-  
+  // Atomic insert + prune via CTE to avoid race conditions when concurrent
+  // messages arrive for the same chat.
   await pool.query(
-    `INSERT INTO conversation_history (chat_id, role, content) VALUES ($1, $2, $3)`,
-    [chatId, role, JSON.stringify(content)]
-  );
-  // Prune old messages beyond limit
-  await pool.query(
-    `DELETE FROM conversation_history
+    `WITH inserted AS (
+       INSERT INTO conversation_history (chat_id, role, content)
+       VALUES ($1, $2, $3)
+       RETURNING id
+     )
+     DELETE FROM conversation_history
      WHERE chat_id = $1 AND id NOT IN (
        SELECT id FROM conversation_history WHERE chat_id = $1
-       ORDER BY created_at DESC LIMIT $2
+       ORDER BY created_at DESC LIMIT $4
      )`,
-    [chatId, MAX_HISTORY]
+    [chatId, role, JSON.stringify(content), MAX_HISTORY]
   );
 }
 
@@ -230,8 +272,8 @@ function buildSystemPrompt(userContext, registeredUsers, chatMeta = {}, now = ne
 // ---------------------------------------------------------------------------
 
 async function forwardToOwnerAgent(event, apiBaseUrl, userContext = null) {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
+  const client = getClient();
+  if (!client) {
     logger.warn('ANTHROPIC_API_KEY not set, skipping agent forward');
     return null;
   }
@@ -279,83 +321,89 @@ async function forwardToOwnerAgent(event, apiBaseUrl, userContext = null) {
   const userMsg = { role: 'user', content: text };
   await appendHistory(chatId, 'user', text).catch(() => {});
 
-  const client = new Anthropic({ apiKey });
   const messages = [...history, userMsg];
 
-  // Agentic loop
-  let rounds = 0;
-  let finalText = '';
+  // Acquire concurrency slot (waits if at capacity)
+  await acquireSlot();
 
-  while (rounds < MAX_TOOL_ROUNDS) {
-    rounds++;
+  try {
+    // Agentic loop
+    let rounds = 0;
+    let finalText = '';
 
-    let response;
-    try {
-      response = await client.messages.create({
-        model: MODEL,
-        max_tokens: 1024,
-        system: systemPrompt,
-        tools: TOOLS,
-        messages,
-      });
-    } catch (err) {
-      logger.error('Anthropic API error', { error: err.message });
-      await feishu.sendMessage(chatId, '⚠️ AI 服务暂时不可用，请稍后重试', 'chat_id');
-      return null;
+    while (rounds < MAX_TOOL_ROUNDS) {
+      rounds++;
+
+      let response;
+      try {
+        response = await client.messages.create({
+          model: MODEL,
+          max_tokens: 1024,
+          system: systemPrompt,
+          tools: TOOLS,
+          messages,
+        });
+      } catch (err) {
+        logger.error('Anthropic API error', { error: err.message });
+        await feishu.sendMessage(chatId, '⚠️ AI 服务暂时不可用，请稍后重试', 'chat_id');
+        return null;
+      }
+
+      // Collect text from this response
+      const textBlocks = response.content.filter(b => b.type === 'text').map(b => b.text).join('');
+      if (textBlocks) finalText = textBlocks;
+
+      // If no tool use, we're done
+      if (response.stop_reason === 'end_turn') {
+        break;
+      }
+
+      // Process tool calls
+      const toolUses = response.content.filter(b => b.type === 'tool_use');
+      if (!toolUses.length) break;
+
+      // Add assistant message to history
+      messages.push({ role: 'assistant', content: response.content });
+
+      // Execute all tools and collect results
+      const toolResults = [];
+      for (const tu of toolUses) {
+        const result = await executeTool(tu.name, tu.input, {
+          userOpenId: uc?.openId || openId,
+          chatId,
+        }).catch(err => ({ error: err.message }));
+
+        logger.info('🔧 Tool result', { tool: tu.name, result });
+        toolResults.push({
+          type: 'tool_result',
+          tool_use_id: tu.id,
+          content: JSON.stringify(result),
+        });
+      }
+
+      // Add tool results to messages and loop
+      messages.push({ role: 'user', content: toolResults });
     }
 
-    // Collect text from this response
-    const textBlocks = response.content.filter(b => b.type === 'text').map(b => b.text).join('');
-    if (textBlocks) finalText = textBlocks;
-
-    // If no tool use, we're done
-    if (response.stop_reason === 'end_turn') {
-      break;
+    // Send final reply
+    if (finalText) {
+      try {
+        await feishu.sendMessage(chatId, finalText, 'chat_id');
+        await appendHistory(chatId, 'assistant', finalText).catch(() => {});
+      } catch (err) {
+        logger.error('Failed to send reply', { error: err.message });
+      }
+    } else {
+      // No text generated — this happens if Claude only called tools and hit MAX_TOOL_ROUNDS
+      // without producing a summary. Notify the user so the request doesn't silently vanish.
+      logger.warn('Agentic loop produced no text response', { chatId, rounds });
+      await feishu.sendMessage(chatId, '⚠️ 操作处理中遇到问题，请稍后重试或换种说法', 'chat_id').catch(() => {});
     }
 
-    // Process tool calls
-    const toolUses = response.content.filter(b => b.type === 'tool_use');
-    if (!toolUses.length) break;
-
-    // Add assistant message to history
-    messages.push({ role: 'assistant', content: response.content });
-
-    // Execute all tools and collect results
-    const toolResults = [];
-    for (const tu of toolUses) {
-      const result = await executeTool(tu.name, tu.input, {
-        userOpenId: uc?.openId || openId,
-        chatId,
-      }).catch(err => ({ error: err.message }));
-
-      logger.info('🔧 Tool result', { tool: tu.name, result });
-      toolResults.push({
-        type: 'tool_result',
-        tool_use_id: tu.id,
-        content: JSON.stringify(result),
-      });
-    }
-
-    // Add tool results to messages and loop
-    messages.push({ role: 'user', content: toolResults });
+    return { ok: true };
+  } finally {
+    releaseSlot();
   }
-
-  // Send final reply
-  if (finalText) {
-    try {
-      await feishu.sendMessage(chatId, finalText, 'chat_id');
-      await appendHistory(chatId, 'assistant', finalText).catch(() => {});
-    } catch (err) {
-      logger.error('Failed to send reply', { error: err.message });
-    }
-  } else {
-    // No text generated — this happens if Claude only called tools and hit MAX_TOOL_ROUNDS
-    // without producing a summary. Notify the user so the request doesn't silently vanish.
-    logger.warn('Agentic loop produced no text response', { chatId, rounds });
-    await feishu.sendMessage(chatId, '⚠️ 操作处理中遇到问题，请稍后重试或换种说法', 'chat_id').catch(() => {});
-  }
-
-  return { ok: true };
 }
 
 // ---------------------------------------------------------------------------
@@ -366,6 +414,6 @@ module.exports = {
   forwardToOwnerAgent,
   isAgentConfigured: () => !!process.env.ANTHROPIC_API_KEY,
   getAgentConfig: () => process.env.ANTHROPIC_API_KEY
-    ? { model: MODEL, maxHistoryMessages: MAX_HISTORY, maxToolRounds: MAX_TOOL_ROUNDS }
+    ? { model: MODEL, maxHistoryMessages: MAX_HISTORY, maxToolRounds: MAX_TOOL_ROUNDS, maxConcurrentAgents: MAX_CONCURRENT_AGENTS }
     : null,
 };

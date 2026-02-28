@@ -57,8 +57,8 @@ src/
 │   ├── agent.js           # AI Agent 回复 API
 │   └── users.js           # 用户管理 API
 ├── services/
-│   ├── reminder.js        # 催办任务：CRUD + 提醒 cron
-│   ├── agentForwarder.js  # 直接调用 Anthropic API（tool calling + 对话历史）
+│   ├── reminder.js        # 催办任务：CRUD + 提醒 cron（make_interval 参数化）
+│   ├── agentForwarder.js  # 直接调用 Anthropic API（singleton client + tool calling + 对话历史 + 并发信号量 max 10）
 │   └── cuibanHandler.js   # 催办命令路由（view/complete/create）
 ├── db/
 │   ├── pool.js            # pg 连接池
@@ -70,8 +70,8 @@ src/
 ├── feishu/
 │   └── client.js          # Feishu REST API（消息/联系人/多维表格）
 ├── middleware/
-│   ├── auth.js            # API Key 认证（SHA-256 + timingSafeEqual）+ requireAdmin（deprecated）
-│   └── rateLimit.js       # 内存限流（API 100/min，Webhook 200/min，10k cap，单实例）
+│   ├── auth.js            # feishuWebhookAuth（签名+解密）+ apiAuth（SHA-256 + timingSafeEqual）
+│   └── rateLimit.js       # 内存限流（API 100/min，Webhook 200/min，10k cap，批量淘汰 ~10%，单实例）
 └── utils/
     ├── intentDetector.js  # 消息意图分类
     ├── menuBuilder.js     # 动态权限菜单
@@ -166,7 +166,7 @@ CREATE TABLE conversation_history (
 CREATE INDEX idx_conv_history_chat ON conversation_history(chat_id, created_at DESC);
 ```
 
-每个 chat_id 最多保留 20 条历史（旧的自动删除），用于给 Claude 提供多轮对话上下文。
+每个 chat_id 最多保留 20 条历史（通过原子 CTE 在 INSERT 时自动删除旧记录），用于给 Claude 提供多轮对话上下文。Schema 通过 `db/migrations/008_add_conversation_history.sql` 创建。
 
 ### settings / audit_logs / admins
 
@@ -384,6 +384,7 @@ services:
 005_add_reminder_interval.sql  提醒间隔 + last_reminded_at
 006_add_user_sessions.sql      DB 持久化会话
 007_add_deadline_notified_at.sql  截止逾期一次性通报字段
+008_add_conversation_history.sql  AI 对话历史表（从 runtime DDL 迁移）
 ```
 
 ---
@@ -397,12 +398,13 @@ services:
 | 事件去重 | 内存 Map，event_id，5 分钟 TTL（单实例，多实例无法共享） |
 | API 鉴权 | SHA-256 哈希 + `crypto.timingSafeEqual`，防止长度和时序侧信道；未设 API_KEY 时仅 `NODE_ENV=development` 放行 |
 | Body 大小限制 | `express.json({ limit: '1mb' })` 防止超大 payload |
-| 限流 | 自定义内存 rate limiter：API 100/min，Webhook 200/min，上限 10,000 条目（单实例，多实例阈值 = N 倍） |
+| 限流 | 自定义内存 rate limiter：API 100/min，Webhook 200/min，上限 10,000 条目（超限时批量淘汰 ~10%）；单实例，多实例阈值 = N 倍 |
 | 设置白名单 | `PUT /settings/:key` 仅接受预定义 key（`VALID_SETTING_KEYS`），防止任意键注入 |
 | 角色验证 | 用户创建/更新时验证 role 值；admin 表验证 admin 角色值 |
 | 权限检查 | resolveFeatures() 在每条消息处理前执行 |
 | 错误屏蔽 | 生产环境（`NODE_ENV=production`）错误响应替换为通用描述，不暴露内部细节 |
-| 日志安全 | Agent webhook URL 在日志中自动脱敏（仅保留 origin + pathname）；用户 ID 不包含在错误消息中 |
+| 日志安全 | 用户 ID 不包含在错误消息中 |
 | CORS | 可通过 `CORS_ORIGIN` 限制允许的跨域来源，默认 `*` |
 | 登录保护 | Web 管理后台连续 5 次密码错误后锁定 1 分钟 |
-| requireAdmin | **已弃用** — 读取可伪造的 `x-user-id`/`x-user-email` 头，每次调用记录警告日志 |
+| Agent 并发 | `agentForwarder` 限制最多 10 个并发 Anthropic API 调用（信号量模式），防止负载下耗尽连接或触发速率限制 |
+| Agent 任务归属 | `complete_task` 工具和 `/api/agent/tasks/:id/complete` 均校验调用者是否为任务的 assignee |

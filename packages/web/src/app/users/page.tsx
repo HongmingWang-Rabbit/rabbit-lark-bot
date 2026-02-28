@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback, useId, type RefObject } from 'react';
+import { useState, useEffect, useRef, useCallback, useId, cloneElement, type RefObject, type ReactElement } from 'react';
 import useSWR, { mutate } from 'swr';
 import { api, SWR_KEYS, User, Feature, UserRole } from '@/lib/api';
 import { LoadingState, ErrorState } from '@/components/StatusStates';
@@ -576,17 +576,14 @@ function AddUserModal({ onClose, onSaved }: { onClose: () => void; onSaved: () =
   );
 }
 
-function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactElement<{ id?: string }> }) {
+function Field({ label, hint, children }: { label: string; hint?: string; children: ReactElement<{ id?: string }> }) {
   const generatedId = useId();
-  const id = (children as React.ReactElement<{ id?: string }>).props.id || generatedId;
+  const id = children.props.id || generatedId;
   return (
     <div>
       <label htmlFor={id} className="block text-sm font-medium text-gray-700 mb-1">{label}</label>
       {hint && <p className="text-xs text-gray-400 mb-1">{hint}</p>}
-      {/* Clone child to inject the id for label association */}
-      {typeof children === 'object' && 'props' in children
-        ? { ...children, props: { ...children.props, id } }
-        : children}
+      {cloneElement(children, { id })}
     </div>
   );
 }

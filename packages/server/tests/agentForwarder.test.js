@@ -6,6 +6,29 @@ jest.mock('../src/utils/logger', () => ({
   debug: jest.fn(),
 }));
 
+// Mock DB pool
+jest.mock('../src/db/index', () => ({
+  pool: { query: jest.fn().mockResolvedValue({ rows: [] }) },
+}));
+
+// Mock reminder service
+jest.mock('../src/services/reminder', () => ({
+  getUserPendingTasks: jest.fn().mockResolvedValue([]),
+  createTask: jest.fn().mockResolvedValue({ id: 1 }),
+  completeTask: jest.fn().mockResolvedValue({ id: 1, status: 'completed' }),
+}));
+
+// Mock users DB
+jest.mock('../src/db/users', () => ({
+  findByOpenId: jest.fn().mockResolvedValue({ name: 'Test', open_id: 'ou_123' }),
+  list: jest.fn().mockResolvedValue([]),
+}));
+
+// Mock feishu client
+jest.mock('../src/feishu/client', () => ({
+  sendMessage: jest.fn().mockResolvedValue({}),
+}));
+
 const agentForwarder = require('../src/services/agentForwarder');
 
 describe('Agent Forwarder Service', () => {
@@ -20,224 +43,72 @@ describe('Agent Forwarder Service', () => {
     process.env = originalEnv;
   });
 
-  describe('formatForAgent', () => {
-    it('should format Lark event to standard message format', () => {
-      const event = {
-        message: {
-          message_id: 'om_123',
-          chat_id: 'oc_456',
-          chat_type: 'group',
-          message_type: 'text',
-          content: JSON.stringify({ text: 'Hello' }),
-          create_time: '1234567890',
-        },
-        sender: {
-          sender_id: {
-            user_id: 'user_123',
-            open_id: 'ou_123',
-            union_id: 'on_123',
-          },
-          sender_type: 'user',
-        },
-      };
-
-      const result = agentForwarder.formatForAgent(event, 'http://localhost:3456');
-
-      expect(result.source.bridge).toBe('rabbit-lark-bot');
-      expect(result.source.platform).toBe('lark');
-      expect(result.source.version).toBe('1.0.0');
-      expect(result.source.capabilities).toContain('text');
-
-      expect(result.reply_via.mcp).toBe('rabbit-lark');
-      expect(result.reply_via.api).toBe('http://localhost:3456/api/agent/send');
-
-      expect(result.event).toBe('message');
-      expect(result.message_id).toBe('om_123');
-      expect(result.chat_id).toBe('oc_456');
-      expect(result.chat_type).toBe('group');
-
-      expect(result.user.id).toBe('user_123');
-      expect(result.user.open_id).toBe('ou_123');
-      expect(result.user.type).toBe('user');
-
-      expect(result.content.type).toBe('text');
-      expect(result.content.text).toBe('Hello');
-
-      expect(result.timestamp).toBe(1234567890);
-    });
-
-    it('should handle non-JSON content gracefully', () => {
-      const event = {
-        message: {
-          message_id: 'om_123',
-          content: 'plain text',
-          message_type: 'text',
-        },
-        sender: {
-          sender_id: { user_id: 'user_123' },
-        },
-      };
-
-      const result = agentForwarder.formatForAgent(event, 'http://localhost:3456');
-
-      expect(result.content.type).toBe('text');
-      expect(result.content.text).toBe('plain text');
-    });
-
-    it('should handle missing fields', () => {
-      const event = {
-        message: {},
-        sender: {},
-      };
-
-      const result = agentForwarder.formatForAgent(event, 'http://localhost:3456');
-
-      expect(result.message_id).toBeUndefined();
-      expect(result.user.id).toBeUndefined();
-      expect(result.content.type).toBe('text');
-    });
-  });
-
-  describe('generateSignature', () => {
-    it('should generate HMAC signature', () => {
-      const payload = { test: 'data' };
-      const secret = 'my-secret';
-
-      const signature = agentForwarder.generateSignature(payload, secret);
-
-      expect(signature).toBeTruthy();
-      expect(typeof signature).toBe('string');
-      expect(signature.length).toBe(64); // SHA256 hex length
-    });
-
-    it('should return empty string without secret', () => {
-      const payload = { test: 'data' };
-
-      const signature = agentForwarder.generateSignature(payload, '');
-      expect(signature).toBe('');
-
-      const signatureNull = agentForwarder.generateSignature(payload, null);
-      expect(signatureNull).toBe('');
-    });
-
-    it('should produce consistent signatures', () => {
-      const payload = { test: 'data' };
-      const secret = 'my-secret';
-
-      const sig1 = agentForwarder.generateSignature(payload, secret);
-      const sig2 = agentForwarder.generateSignature(payload, secret);
-
-      expect(sig1).toBe(sig2);
-    });
-
-    it('should produce different signatures for different payloads', () => {
-      const secret = 'my-secret';
-
-      const sig1 = agentForwarder.generateSignature({ a: 1 }, secret);
-      const sig2 = agentForwarder.generateSignature({ a: 2 }, secret);
-
-      expect(sig1).not.toBe(sig2);
-    });
-  });
-
-  describe('getAgentConfig', () => {
-    it('should return null when AGENT_WEBHOOK_URL not set', () => {
-      delete process.env.AGENT_WEBHOOK_URL;
-
-      const config = agentForwarder.getAgentConfig();
-      expect(config).toBeNull();
-    });
-
-    it('should return config when AGENT_WEBHOOK_URL is set', () => {
-      process.env.AGENT_WEBHOOK_URL = 'http://agent.com/webhook';
-      process.env.AGENT_API_KEY = 'test-key';
-      process.env.AGENT_TIMEOUT_MS = '5000';
-
-      const config = agentForwarder.getAgentConfig();
-
-      expect(config.webhookUrl).toBe('http://agent.com/webhook');
-      expect(config.apiKey).toBe('test-key');
-      expect(config.timeout).toBe(5000);
-    });
-
-    it('should use default timeout when not specified', () => {
-      process.env.AGENT_WEBHOOK_URL = 'http://agent.com/webhook';
-      delete process.env.AGENT_TIMEOUT_MS;
-
-      const config = agentForwarder.getAgentConfig();
-      expect(config.timeout).toBe(30000);
-    });
-  });
-
   describe('isAgentConfigured', () => {
-    it('should return false when not configured', () => {
-      delete process.env.AGENT_WEBHOOK_URL;
+    it('should return false when ANTHROPIC_API_KEY not set', () => {
+      delete process.env.ANTHROPIC_API_KEY;
       expect(agentForwarder.isAgentConfigured()).toBe(false);
     });
 
-    it('should return true when configured', () => {
-      process.env.AGENT_WEBHOOK_URL = 'http://agent.com/webhook';
+    it('should return true when ANTHROPIC_API_KEY is set', () => {
+      process.env.ANTHROPIC_API_KEY = 'sk-ant-test-key';
       expect(agentForwarder.isAgentConfigured()).toBe(true);
     });
   });
 
-  describe('forwardToAgent', () => {
-    const originalFetch = global.fetch;
-
-    afterEach(() => {
-      global.fetch = originalFetch;
+  describe('getAgentConfig', () => {
+    it('should return null when ANTHROPIC_API_KEY not set', () => {
+      delete process.env.ANTHROPIC_API_KEY;
+      const config = agentForwarder.getAgentConfig();
+      expect(config).toBeNull();
     });
 
-    it('should POST message to webhook URL and return response', async () => {
-      const mockResponse = { ok: true, json: () => Promise.resolve({ status: 'received' }), text: () => Promise.resolve('') };
-      global.fetch = jest.fn().mockResolvedValue(mockResponse);
+    it('should return config when ANTHROPIC_API_KEY is set', () => {
+      process.env.ANTHROPIC_API_KEY = 'sk-ant-test-key';
+      const config = agentForwarder.getAgentConfig();
 
-      const message = { message_id: 'om_1', content: { text: 'hi' } };
-      const result = await agentForwarder.forwardToAgent('http://agent.test/hook', message, { apiKey: 'key' });
-
-      expect(result).toEqual({ status: 'received' });
-      expect(global.fetch).toHaveBeenCalledWith(
-        'http://agent.test/hook',
-        expect.objectContaining({ method: 'POST' })
-      );
-    });
-
-    it('should throw on non-OK response', async () => {
-      global.fetch = jest.fn().mockResolvedValue({
-        ok: false,
-        status: 500,
-        text: () => Promise.resolve('Internal Server Error'),
-      });
-
-      const message = { message_id: 'om_1' };
-      await expect(
-        agentForwarder.forwardToAgent('http://agent.test/hook', message)
-      ).rejects.toThrow('Agent returned 500');
-    });
-
-    it('should throw on timeout (abort)', async () => {
-      global.fetch = jest.fn().mockImplementation(() => {
-        const err = new Error('aborted');
-        err.name = 'AbortError';
-        return Promise.reject(err);
-      });
-
-      const message = { message_id: 'om_1' };
-      await expect(
-        agentForwarder.forwardToAgent('http://agent.test/hook', message, { timeout: 1 })
-      ).rejects.toThrow('Agent request timeout');
+      expect(config).not.toBeNull();
+      expect(config.model).toBe('claude-haiku-4-5-20251001');
+      expect(config.maxHistoryMessages).toBe(20);
+      expect(config.maxToolRounds).toBe(5);
+      expect(config.maxConcurrentAgents).toBe(10);
     });
   });
 
-  describe('constants', () => {
-    it('should export BRIDGE_VERSION', () => {
-      expect(agentForwarder.BRIDGE_VERSION).toBe('1.0.0');
+  describe('forwardToOwnerAgent', () => {
+    it('should return null when ANTHROPIC_API_KEY not set', async () => {
+      delete process.env.ANTHROPIC_API_KEY;
+
+      const event = {
+        message: { chat_id: 'oc_1', content: JSON.stringify({ text: 'hello' }) },
+        sender: { sender_id: { open_id: 'ou_123' } },
+      };
+
+      const result = await agentForwarder.forwardToOwnerAgent(event, 'http://localhost:3456');
+      expect(result).toBeNull();
     });
 
-    it('should export CAPABILITIES', () => {
-      expect(agentForwarder.CAPABILITIES).toContain('text');
-      expect(agentForwarder.CAPABILITIES).toContain('reply');
-      expect(agentForwarder.CAPABILITIES).toContain('reaction');
+    it('should return null when text is empty', async () => {
+      process.env.ANTHROPIC_API_KEY = 'sk-ant-test-key';
+
+      const event = {
+        message: { chat_id: 'oc_1', content: JSON.stringify({ text: '' }) },
+        sender: { sender_id: { open_id: 'ou_123' } },
+      };
+
+      const result = await agentForwarder.forwardToOwnerAgent(event, 'http://localhost:3456');
+      expect(result).toBeNull();
+    });
+
+    it('should return null when chat_id is missing', async () => {
+      process.env.ANTHROPIC_API_KEY = 'sk-ant-test-key';
+
+      const event = {
+        message: { content: JSON.stringify({ text: 'hello' }) },
+        sender: { sender_id: { open_id: 'ou_123' } },
+      };
+
+      const result = await agentForwarder.forwardToOwnerAgent(event, 'http://localhost:3456');
+      expect(result).toBeNull();
     });
   });
 });

@@ -22,9 +22,12 @@ jest.mock('../src/utils/logger', () => ({
 // Mock agentForwarder
 jest.mock('../src/services/agentForwarder', () => ({
   isAgentConfigured: jest.fn().mockReturnValue(true),
-  getAgentConfig: jest.fn().mockReturnValue({ webhookUrl: 'http://test.com/webhook' }),
-  BRIDGE_VERSION: '1.0.0',
-  CAPABILITIES: ['text', 'image', 'file', 'reply', 'reaction', 'interactive'],
+  getAgentConfig: jest.fn().mockReturnValue({
+    model: 'claude-haiku-4-5-20251001',
+    maxHistoryMessages: 20,
+    maxToolRounds: 5,
+    maxConcurrentAgents: 10,
+  }),
 }));
 
 const agentRoutes = require('../src/routes/agent');
@@ -165,7 +168,7 @@ describe('Agent API Routes', () => {
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
       expect(res.body.configured).toBe(true);
-      expect(res.body.webhook_configured).toBe(true);
+      expect(res.body.model).toBeTruthy();
     });
   });
 
@@ -175,8 +178,6 @@ describe('Agent API Routes', () => {
 
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
-      expect(res.body.version).toBe('1.0.0');
-      expect(res.body.capabilities).toContain('text');
       expect(res.body.message_format).toHaveProperty('source');
       expect(res.body.message_format).toHaveProperty('reply_via');
     });

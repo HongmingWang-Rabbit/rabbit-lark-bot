@@ -63,6 +63,8 @@ async function getToken() {
         throw new Error(`Invalid token response: code=${data.code}, msg=${data.msg || 'unknown'}`);
       }
 
+      // Refresh 60s before real expiry to avoid races; floor at 300s (5 min)
+      // in case Feishu returns a very short TTL.
       tokenCache = {
         token: data.tenant_access_token,
         expiresAt: Date.now() + Math.max(data.expire - 60, 300) * 1000,

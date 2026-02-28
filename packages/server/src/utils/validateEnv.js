@@ -18,9 +18,8 @@ function validateEnv() {
     'API_KEY',
     'API_BASE_URL',
     'FEISHU_ENCRYPT_KEY',
-    'AGENT_WEBHOOK_URL',
+    'ANTHROPIC_API_KEY',
     'AGENT_API_KEY',
-    'AGENT_TIMEOUT_MS',
     'ENABLE_BUILTIN_BOT',
     'CORS_ORIGIN',
     'REQUIRE_AUTH',
@@ -53,11 +52,11 @@ function validateEnv() {
   if (!process.env.FEISHU_ENCRYPT_KEY) {
     warnings.push('FEISHU_ENCRYPT_KEY not set - webhook signature verification disabled');
   }
-  if (!process.env.AGENT_WEBHOOK_URL) {
-    warnings.push('AGENT_WEBHOOK_URL not set - messages will not be forwarded to any agent');
+  if (!process.env.ANTHROPIC_API_KEY) {
+    warnings.push('ANTHROPIC_API_KEY not set - AI agent forwarding is disabled');
   }
   if (!process.env.AGENT_API_KEY) {
-    warnings.push('AGENT_API_KEY not set - /api/agent/send endpoint is unprotected and agent reply auth will fail if openclaw.json has rabbitApiKey set');
+    warnings.push('AGENT_API_KEY not set - /api/agent endpoints are unprotected');
   }
   if (!process.env.API_BASE_URL) {
     warnings.push('API_BASE_URL not set - reply_via.api will use localhost');
@@ -82,11 +81,11 @@ function validateEnv() {
     }
   }
 
-  logger.info('Environment validated', { 
+  logger.info('Environment validated', {
     required: present.length,
     optional: optional.filter(k => process.env[k]).length,
     builtinBot: builtinBotEnabled,
-    agentForwarding: !!process.env.AGENT_WEBHOOK_URL,
+    agentForwarding: !!process.env.ANTHROPIC_API_KEY,
   });
 
   return true;

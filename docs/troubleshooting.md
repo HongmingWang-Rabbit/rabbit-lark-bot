@@ -74,55 +74,37 @@ docker compose build web && docker compose up -d web
 
 ---
 
-## AI Agent 收到消息但不回复（`/api/agent/send` 401）
+## AI 不回复 / AI 服务不可用
 
-### 症状
-Server 日志显示 `Agent responded: success: true`，但随后出现：
-```
-WARN Unauthorized API access attempt {"path":"/agent/send"}
-```
-飞书没有收到回复。
+### 症状 1：飞书消息发出后没有 AI 回复
+Server 日志显示 `ANTHROPIC_API_KEY not set, skipping agent forward`。
 
-### 原因：`AGENT_API_KEY` 与 `API_KEY` 是两把不同的 key
+**原因：** `.env` 中未设置 `ANTHROPIC_API_KEY`。
+
+**修复：**
+```env
+ANTHROPIC_API_KEY=sk-ant-xxx
+```
+然后重建容器：`docker compose up -d server`
+
+### 症状 2：AI 回复 "⚠️ AI 服务暂时不可用"
+Server 日志显示 `Anthropic API error`。
+
+**可能原因：**
+- API Key 无效或过期
+- Anthropic API 临时不可用
+- 速率限制被触发（系统限制并发 10 个 agent 调用）
+
+### 症状 3：`/api/agent/send` 401（MCP/外部集成）
+
+`AGENT_API_KEY` 与 `API_KEY` 是两把不同的 key：
 
 | Key | 用途 | 配置位置 |
 |-----|------|---------|
 | `API_KEY` | Web 管理后台 API 鉴权 | `.env` |
-| `AGENT_API_KEY` | rabbit-lark-bot ↔ OpenClaw 共享密钥 | `.env` + `openclaw.json` |
+| `AGENT_API_KEY` | `/api/agent/*` 端点的认证 key | `.env` |
 
-OpenClaw plugin 用 `rabbitApiKey`（来自 `openclaw.json`）调用 `/api/agent/send`，  
-服务器用 `AGENT_API_KEY` 验证这个回调。两边必须一致。
-
-**修复步骤：**
-
-1. 生成一个随机密钥：
-   ```bash
-   openssl rand -hex 32
-   ```
-
-2. 在 `.env` 里设置：
-   ```env
-   AGENT_API_KEY=<generated-key>
-   ```
-
-3. 在 OpenClaw 的 `openclaw.json` 里设置（值相同）：
-   ```json
-   {
-     "channels": {
-       "lark": {
-         "rabbitApiKey": "<generated-key>"
-       }
-     }
-   }
-   ```
-
-4. 重启服务：
-   ```bash
-   # 重建 server 容器（让新 env 生效）
-   docker compose up -d server
-   # 重启 OpenClaw gateway（让新 config 生效）
-   openclaw gateway restart
-   ```
+**修复：** 确保外部调用者使用 `AGENT_API_KEY` 的值作为 Bearer token。
 
 ---
 
@@ -197,16 +179,11 @@ node scripts/enrich-users.js
 
 ---
 
-## OpenClaw Plugin 接入检查清单
+## AI 功能接入检查清单
 
-以下配置需要手动完成，代码无法自动检测：
-
-- [ ] `openclaw.json` 中 `channels.lark.enabled: true`
-- [ ] `channels.lark.rabbitApiUrl` 指向 server（Docker 内用 `http://localhost:3456`，宿主机访问容器用 `http://localhost:3456`）
-- [ ] `channels.lark.rabbitApiKey` 与 `.env` 中的 `AGENT_API_KEY` 值一致
-- [ ] `channels.lark.webhookPath` 默认为 `/lark-webhook`（与 `AGENT_WEBHOOK_URL` 路径一致）
-- [ ] OpenClaw gateway 以 `--bind lan`（而非 loopback）启动，Docker 容器才能访问 `host.docker.internal:18789`
-- [ ] OpenClaw gateway 配置 `gateway.controlUi.dangerouslyAllowHostHeaderOriginFallback: true`（非 loopback bind 时需要）
+- [ ] `.env` 中设置 `ANTHROPIC_API_KEY`（必填，缺失时 AI 功能禁用）
+- [ ] `.env` 中设置 `AGENT_API_KEY`（推荐，保护 `/api/agent/*` 端点）
 - [ ] 飞书应用 webhook URL 使用 HTTPS 域名（`https://your-domain.com/webhook/event`）
-
-详见 [docs/setup-openclaw.md](setup-openclaw.md)。
+- [ ] 飞书应用已开通 Contact API 权限（用于用户名/邮箱解析）
+- [ ] 数据库已执行 `008_add_conversation_history.sql` 迁移
+- [ ] 确认 `GET /api/agent/status` 返回 `"configured": true`

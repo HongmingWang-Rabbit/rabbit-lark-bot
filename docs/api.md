@@ -21,7 +21,7 @@ API Key 比较使用 SHA-256 哈希 + `crypto.timingSafeEqual`，防止长度和
 
 - API：100 请求/分钟/IP
 - Webhook：200 请求/分钟/IP
-- 内存上限：10,000 条目（超出时自动淘汰最早条目）
+- 内存上限：10,000 条目（超出时批量淘汰 ~10% 最早条目）
 
 > 注意：限流计数器存储在进程内存中（固定窗口），多实例部署时每个实例独立计数。
 
@@ -76,6 +76,7 @@ API Key 比较使用 SHA-256 哈希 + `crypto.timingSafeEqual`，防止长度和
     "adminCount": 2,
     "totalUsers": 15
   },
+  "builtinEnabled": true,
   "recentActivity": [
     {
       "id": 1,
@@ -480,6 +481,7 @@ API Key 比较使用 SHA-256 哈希 + `crypto.timingSafeEqual`，防止长度和
 
 **错误：**
 - `400` — Invalid task ID
+- `403` — 非任务 assignee 尝试完成（仅当提供 `user_open_id` 时校验）
 - `404` — 任务不存在或已完成
 
 ---

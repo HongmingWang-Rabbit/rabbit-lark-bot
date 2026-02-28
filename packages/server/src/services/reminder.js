@@ -342,7 +342,7 @@ async function sendPendingReminders() {
         WHERE status = 'pending'
           AND reminder_interval_hours > 0
           AND assignee_open_id IS NOT NULL
-          AND NOW() >= COALESCE(last_reminded_at, created_at) + (reminder_interval_hours || ' hours')::interval
+          AND NOW() >= COALESCE(last_reminded_at, created_at) + make_interval(hours => reminder_interval_hours)
         ORDER BY deadline ASC NULLS LAST
         FOR UPDATE SKIP LOCKED
       `);

@@ -16,7 +16,7 @@ packages/
   scripts/  → Utility scripts
 db/
   init.sql       → Full schema
-  migrations/    → Incremental SQL (001-007)
+  migrations/    → Incremental SQL (001-008)
 ```
 
 ## Commands
@@ -53,7 +53,7 @@ cd packages/web && npx jest __tests__/someFile.test.tsx
 
 ### Database migrations
 ```bash
-docker exec rabbit-lark-db psql -U rabbit -d rabbit_lark < db/migrations/007_add_deadline_notified_at.sql
+docker exec rabbit-lark-db psql -U rabbit -d rabbit_lark < db/migrations/008_add_conversation_history.sql
 ```
 
 ## Architecture
@@ -74,10 +74,10 @@ Feishu → POST /webhook/event → decrypt AES-256-CBC → dedup → auto-regist
 - `src/routes/` — Express routes: `webhook.js`, `api.js`, `agent.js`, `users.js`
 - `src/services/reminder.js` — Task CRUD, reminder scheduling, `sendPendingReminders()` runs every 15 min via `setInterval`
 - `src/services/cuibanHandler.js` — Chat-based task commands (view/complete/create) + multi-step session selection
-- `src/services/agentForwarder.js` — Direct Anthropic API integration: builds system prompt (user context + registered users + date), runs agentic loop (max 5 rounds), executes `list_tasks`/`create_task`/`complete_task` tools, persists conversation history in `conversation_history` table, replies via `feishu.sendMessage()`; requires `ANTHROPIC_API_KEY`
+- `src/services/agentForwarder.js` — Direct Anthropic API integration: lazy singleton client, builds system prompt (user context + registered users + date), runs agentic loop (max 5 rounds, max 10 concurrent via semaphore), executes `list_tasks`/`create_task`/`complete_task` tools, persists conversation history in `conversation_history` table (atomic CTE pruning), replies via `feishu.sendMessage()`; requires `ANTHROPIC_API_KEY`
 - `src/feishu/client.js` — Feishu REST API wrapper (messaging, user info, bitable); token cache with promise coalescing + retry-on-401
-- `src/middleware/auth.js` — `feishuWebhookAuth` (raw-body signature + encrypted payload) and `apiAuth` (API key via SHA-256 hash + timingSafeEqual); `requireAdmin` is **deprecated** (forgeable headers)
-- `src/middleware/rateLimit.js` — In-memory fixed-window rate limiter (10k entry cap, single-instance only)
+- `src/middleware/auth.js` — `feishuWebhookAuth` (raw-body signature + encrypted payload) and `apiAuth` (API key via SHA-256 hash + timingSafeEqual)
+- `src/middleware/rateLimit.js` — In-memory fixed-window rate limiter (10k entry cap, batch ~10% eviction, single-instance only)
 - `src/utils/intentDetector.js` — Regex-based message classification
 - `src/utils/safeError.js` — Production-safe error messages (hides internals when NODE_ENV=production)
 - `src/features/index.js` — Role-based permission registry (superadmin/admin/user)

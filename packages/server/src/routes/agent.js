@@ -10,6 +10,7 @@ const router = express.Router();
 const feishu = require('../feishu/client');
 const reminderService = require('../services/reminder');
 const usersDb = require('../db/users');
+const pool = require('../db/pool');
 const logger = require('../utils/logger');
 const agentForwarder = require('../services/agentForwarder');
 const { safeErrorMessage } = require('../utils/safeError');
@@ -189,7 +190,8 @@ router.get('/tasks', async (req, res) => {
 
 /**
  * POST /api/agent/tasks/:id/complete
- * Complete a task on behalf of the user
+ * Complete a task on behalf of the user.
+ * Ownership check: only the task's assignee (by open_id or feishu_user_id) may complete it.
  */
 router.post('/tasks/:id/complete', async (req, res) => {
   try {
@@ -205,6 +207,27 @@ router.post('/tasks/:id/complete', async (req, res) => {
       const user = await usersDb.findByOpenId(user_open_id).catch(() => null);
       completerName = user?.name || user?.email || null;
       feishuUserId = user?.feishu_user_id || user_open_id;
+    }
+
+    // Ownership check: only the task's assignee may complete via agent API
+    if (user_open_id) {
+      const { rows } = await pool.query(
+        'SELECT assignee_open_id, assignee_id FROM tasks WHERE id = $1 AND status = $2',
+        [id, 'pending']
+      );
+      const taskRecord = rows[0];
+      if (!taskRecord) return res.status(404).json({ error: '任务不存在或已完成' });
+
+      const isOwner =
+        taskRecord.assignee_open_id === user_open_id ||
+        taskRecord.assignee_id === user_open_id ||
+        (feishuUserId && taskRecord.assignee_id === feishuUserId);
+      if (!isOwner) {
+        logger.warn('Agent API: unauthorized complete_task attempt', {
+          taskId: id, userOpenId: user_open_id, assigneeOpenId: taskRecord.assignee_open_id,
+        });
+        return res.status(403).json({ error: '你只能完成分配给自己的任务' });
+      }
     }
 
     const task = await reminderService.completeTask(id, proof || '', feishuUserId || 'agent', completerName);

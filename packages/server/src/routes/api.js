@@ -8,7 +8,9 @@ const feishu = require('../feishu/client');
 const { safeErrorMessage } = require('../utils/safeError');
 
 // Resolve a stable actor identifier for audit logs from web/API requests.
-// Web UI doesn't have user sessions, so we use 'web_admin' as the actor.
+// TODO: Once server-side auth is implemented, derive the actor from the
+// authenticated session instead of trusting client-provided values.
+// Currently any authenticated API client can impersonate another user in audit logs.
 function resolveActor(req) {
   return req.body?.userId || req.query?.userId || 'web_admin';
 }
@@ -31,6 +33,7 @@ router.get('/dashboard', async (req, res) => {
     ]);
 
     const stats = taskStats.rows[0];
+    const builtinEnabled = (process.env.ENABLE_BUILTIN_BOT ?? 'true') !== 'false';
     res.json({
       stats: {
         totalTasks: stats.total,
@@ -39,6 +42,7 @@ router.get('/dashboard', async (req, res) => {
         adminCount: adminList.length,
         totalUsers: userCount.rows[0].count,
       },
+      builtinEnabled,
       recentActivity: recentLogs,
     });
   } catch (err) {

@@ -6,7 +6,7 @@
 |----------|-------------|
 | [architecture.md](architecture.md) | System architecture, data flow, deployment |
 | [api.md](api.md) | Complete REST API reference |
-| [setup-openclaw.md](setup-openclaw.md) | OpenClaw AI Agent integration guide |
+| [setup-openclaw.md](setup-openclaw.md) | ~~OpenClaw AI Agent integration~~ (deprecated — now using direct Anthropic API) |
 | [troubleshooting.md](troubleshooting.md) | Common issues and solutions |
 | [edit-history/](edit-history/) | Daily development logs |
 
@@ -22,7 +22,7 @@
 - [Security](architecture.md#安全) - Auth and rate limiting
 
 ### For Operators
-- [OpenClaw Setup](setup-openclaw.md) - Step-by-step AI agent integration
+- [~~OpenClaw Setup~~](setup-openclaw.md) - Deprecated (replaced by direct Anthropic API)
 - [Troubleshooting](troubleshooting.md) - Common deployment pitfalls
 - [Environment Variables](../.env.example) - Annotated env var reference
 

@@ -1,5 +1,4 @@
 const crypto = require('crypto');
-const { admins } = require('../db');
 const logger = require('../utils/logger');
 
 /**
@@ -116,38 +115,6 @@ async function apiAuth(req, res, next) {
 }
 
 /**
- * 检查是否为管理员
- *
- * @deprecated DO NOT use on routes exposed to untrusted clients. This middleware
- * reads identity from x-user-id / x-user-email headers, which can be forged by
- * any client. It must only be used behind a trusted reverse proxy that strips
- * and re-sets these headers, or replaced with JWT/session-based auth.
- */
-async function requireAdmin(req, res, next) {
-  logger.warn('requireAdmin called — ensure this route is behind a trusted proxy', { path: req.path });
-  try {
-    const userId = req.headers['x-user-id'];
-    const email = req.headers['x-user-email'];
-
-    if (!userId && !email) {
-      return res.status(401).json({ error: 'User identification required' });
-    }
-
-    const isAdmin = await admins.isAdmin(userId, email);
-    if (!isAdmin) {
-      logger.warn('Non-admin access attempt', { userId, email, path: req.path });
-      return res.status(403).json({ error: 'Admin access required' });
-    }
-
-    req.adminUser = { userId, email };
-    next();
-  } catch (err) {
-    logger.error('Admin check error', { error: err.message });
-    res.status(500).json({ error: 'Authorization error' });
-  }
-}
-
-/**
  * Agent callback authentication middleware
  * Validates requests from OpenClaw agent using AGENT_API_KEY.
  * Falls back to API_KEY if AGENT_API_KEY is not separately configured.
@@ -191,5 +158,4 @@ module.exports = {
   feishuWebhookAuth,
   apiAuth,
   agentAuth,
-  requireAdmin,
 };

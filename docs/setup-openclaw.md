@@ -1,5 +1,7 @@
 # OpenClaw 集成配置指南
 
+> **⚠️ 已废弃 (Deprecated)** — 自 2026-02-28 起，rabbit-lark-bot 已改用直接 Anthropic API 集成（tool calling 模式）。`AGENT_WEBHOOK_URL` 不再使用，`agentForwarder.js` 直接调用 Anthropic API 并通过飞书 API 回复。请参阅 [architecture.md](architecture.md#ai-对话处理agentforwarder) 了解当前架构。以下内容仅作历史参考保留。
+
 本文档说明如何将 rabbit-lark-bot 与 OpenClaw AI Agent 对接。
 
 ---

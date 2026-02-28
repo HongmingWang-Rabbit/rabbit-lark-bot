@@ -34,10 +34,15 @@ class RateLimiter {
     const data = this.requests.get(key);
 
     if (!data || now - data.windowStart > windowMs) {
-      // Evict oldest entries if map is too large (prevent memory exhaustion)
+      // Evict ~10% of oldest entries when map is full (prevent memory exhaustion)
       if (this.requests.size >= MAX_RATE_LIMIT_ENTRIES) {
-        const oldest = this.requests.keys().next().value;
-        this.requests.delete(oldest);
+        const evictCount = Math.ceil(MAX_RATE_LIMIT_ENTRIES * 0.1);
+        const iter = this.requests.keys();
+        for (let i = 0; i < evictCount; i++) {
+          const { value, done } = iter.next();
+          if (done) break;
+          this.requests.delete(value);
+        }
       }
       this.requests.set(key, { count: 1, windowStart: now, windowMs });
       return false;

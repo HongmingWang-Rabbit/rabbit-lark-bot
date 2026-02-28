@@ -211,51 +211,6 @@ describe('apiAuth', () => {
   });
 });
 
-// ── requireAdmin ─────────────────────────────────────────────────────────────
-
-describe('requireAdmin', () => {
-  const { requireAdmin } = require('../src/middleware/auth');
-  const { admins } = require('../src/db');
-
-  beforeEach(() => {
-    jest.clearAllMocks();
-  });
-
-  it('rejects when no user identification headers are provided', async () => {
-    const { req, res, next } = mockReqRes();
-    await requireAdmin(req, res, next);
-    expect(next).not.toHaveBeenCalled();
-    expect(res.status).toHaveBeenCalledWith(401);
-  });
-
-  it('rejects non-admin users', async () => {
-    admins.isAdmin.mockResolvedValue(false);
-    const { req, res, next } = mockReqRes({ headers: { 'x-user-id': 'user_1' } });
-    await requireAdmin(req, res, next);
-    expect(next).not.toHaveBeenCalled();
-    expect(res.status).toHaveBeenCalledWith(403);
-  });
-
-  it('allows admin users and attaches adminUser to req', async () => {
-    admins.isAdmin.mockResolvedValue(true);
-    const { req, res, next } = mockReqRes({ headers: { 'x-user-id': 'admin_1', 'x-user-email': 'admin@test.com' } });
-    await requireAdmin(req, res, next);
-    expect(next).toHaveBeenCalled();
-    expect(req.adminUser).toEqual({ userId: 'admin_1', email: 'admin@test.com' });
-  });
-
-  it('logs deprecation warning on every call', async () => {
-    const logger = require('../src/utils/logger');
-    admins.isAdmin.mockResolvedValue(true);
-    const { req, res, next } = mockReqRes({ headers: { 'x-user-id': 'admin_1' } });
-    await requireAdmin(req, res, next);
-    expect(logger.warn).toHaveBeenCalledWith(
-      expect.stringContaining('requireAdmin called'),
-      expect.any(Object)
-    );
-  });
-});
-
 // ── feishuWebhookAuth ────────────────────────────────────────────────────────
 
 describe('feishuWebhookAuth', () => {
