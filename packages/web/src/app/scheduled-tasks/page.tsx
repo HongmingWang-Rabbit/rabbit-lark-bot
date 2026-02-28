@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import useSWR, { mutate } from 'swr';
-import { api, SWR_KEYS, ScheduledTask } from '@/lib/api';
+import { api, SWR_KEYS, ScheduledTask, User } from '@/lib/api';
 import AdminGuard from '@/components/AdminGuard';
 
 // ── constants ────────────────────────────────────────────────────────────────
@@ -70,6 +70,13 @@ function ScheduledTasksContent() {
     SWR_KEYS.scheduledTasks,
     api.getScheduledTasks
   );
+  const { data: usersData } = useSWR(SWR_KEYS.users, api.getUsers);
+  // Build open_id → name lookup map
+  const userMap: Record<string, string> = {};
+  (usersData ?? []).forEach((u: User) => {
+    if (u.openId) userMap[u.openId] = u.name || u.openId;
+  });
+
   const [showForm, setShowForm] = useState(false);
   const [editingTask, setEditingTask] = useState<ScheduledTask | null>(null);
 
@@ -124,7 +131,7 @@ function ScheduledTasksContent() {
         <div className="p-4 bg-red-50 text-red-700 rounded-lg mb-4">{error.message}</div>
       )}
       {!isLoading && !error && (
-        <ScheduledTaskTable tasks={tasks} onEdit={handleEdit} />
+        <ScheduledTaskTable tasks={tasks} onEdit={handleEdit} userMap={userMap} />
       )}
     </div>
   );
@@ -135,9 +142,11 @@ function ScheduledTasksContent() {
 function ScheduledTaskTable({
   tasks,
   onEdit,
+  userMap,
 }: {
   tasks: ScheduledTask[];
   onEdit: (t: ScheduledTask) => void;
+  userMap: Record<string, string>;
 }) {
   return (
     <div className="bg-white rounded-lg shadow overflow-x-auto">
@@ -156,7 +165,7 @@ function ScheduledTaskTable({
         </thead>
         <tbody className="divide-y">
           {tasks.map((task) => (
-            <ScheduledTaskRow key={task.id} task={task} onEdit={onEdit} />
+            <ScheduledTaskRow key={task.id} task={task} onEdit={onEdit} userMap={userMap} />
           ))}
           {tasks.length === 0 && (
             <tr>
@@ -174,9 +183,11 @@ function ScheduledTaskTable({
 function ScheduledTaskRow({
   task,
   onEdit,
+  userMap,
 }: {
   task: ScheduledTask;
   onEdit: (t: ScheduledTask) => void;
+  userMap: Record<string, string>;
 }) {
   const [loading, setLoading] = useState(false);
   const [confirming, setConfirming] = useState(false);
@@ -214,7 +225,12 @@ function ScheduledTaskRow({
         {task.title}
         {task.note && <p className="text-xs text-gray-400 mt-0.5">{task.note}</p>}
       </td>
-      <td className="px-4 py-3 text-xs text-gray-500 font-mono">{task.target_open_id}</td>
+      <td className="px-4 py-3">
+        <span className="text-sm">{userMap[task.target_open_id] || task.target_open_id}</span>
+        {userMap[task.target_open_id] && (
+          <span className="block text-xs text-gray-400 font-mono">{task.target_open_id}</span>
+        )}
+      </td>
       <td className="px-4 py-3">
         <span className="text-xs font-mono bg-gray-100 px-1.5 py-0.5 rounded">{task.schedule}</span>
         <span className="text-xs text-gray-400 ml-1">{task.timezone}</span>

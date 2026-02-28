@@ -623,6 +623,7 @@ OAuth 回调，由飞书服务器重定向至此。验证 CSRF state → 换取 
   "target_open_id": "ou_xxx",  // 必填，被催办人的 open_id
   "reporter_open_id": "ou_yyy", // 可选，完成时通知的报告人
   "deadline": "2026-03-31",    // YYYY-MM-DD（可选）
+  "priority": "p1",            // p0=紧急, p1=一般（默认）, p2=不紧急
   "note": "备注"               // 可选
 }
 ```
@@ -666,6 +667,86 @@ OAuth 回调，由飞书服务器重定向至此。验证 CSRF state → 换取 
 
 ---
 
+---
+
+## 定时任务
+
+### GET /api/scheduled-tasks
+
+获取所有定时任务列表。
+
+**Response：**
+```json
+{
+  "success": true,
+  "scheduledTasks": [
+    {
+      "id": 1,
+      "name": "周报催办",
+      "title": "提交本周工作周报",
+      "target_open_id": "ou_xxx",
+      "reporter_open_id": "ou_yyy",
+      "schedule": "0 6 * * 1",
+      "timezone": "Asia/Shanghai",
+      "deadline_days": 1,
+      "priority": "p0",
+      "note": null,
+      "reminder_interval_hours": 24,
+      "enabled": true,
+      "last_run_at": null,
+      "created_at": "2026-02-28T12:00:00.000Z"
+    }
+  ]
+}
+```
+
+### POST /api/scheduled-tasks
+
+创建定时任务。
+
+**Request Body：**
+```json
+{
+  "name": "周报催办",             // 必填
+  "title": "提交本周工作周报",     // 必填（每次触发时创建的任务标题）
+  "targetOpenId": "ou_xxx",      // 必填，被催办人 open_id
+  "reporterOpenId": "ou_yyy",    // 可选
+  "schedule": "0 6 * * 1",       // 必填，cron 表达式
+  "timezone": "Asia/Shanghai",   // 可选，默认 Asia/Shanghai
+  "deadlineDays": 1,             // 创建任务后几天截止（0 = 当天）
+  "priority": "p0",              // p0/p1/p2，默认 p1
+  "note": "备注",                 // 可选
+  "reminderIntervalHours": 24    // 提醒间隔，0 = 关闭，默认 24
+}
+```
+
+**Cron 表达式常用格式：**
+| 描述 | 表达式 |
+|------|--------|
+| 每周一 6:00 | `0 6 * * 1` |
+| 每周五 17:00 | `0 17 * * 5` |
+| 每月1号 9:00 | `0 9 1 * *` |
+| 每月4号 6:00 | `0 6 4 * *` |
+| 每工作日 9:00 | `0 9 * * 1-5` |
+
+**错误：**
+- `400` — 缺少必填字段
+- `400` — Invalid cron expression
+- `400` — Invalid priority（必须是 p0/p1/p2）
+
+### PATCH /api/scheduled-tasks/:id
+
+更新定时任务（部分更新，只传需要修改的字段）。支持所有 POST 字段，另加：
+```json
+{ "enabled": false }  // 暂停任务
+```
+
+### DELETE /api/scheduled-tasks/:id
+
+删除定时任务（同时从 cron runner 中注销）。
+
+---
+
 ## 错误格式
 
 ```json
@@ -696,7 +777,7 @@ OAuth 回调，由飞书服务器重定向至此。验证 CSRF state → 换取 
 | `我的任务` / `任务列表` | cuiban_view | 待办任务列表 | `cuiban_view` |
 | `完成 [N/名称] [URL]` | cuiban_complete | 标记完成，可附证明 | `cuiban_complete` |
 | 数字（任务选择流程中） | — | 选择多任务之一 | — |
-| `/add 任务名 邮箱/姓名 [日期]` | cuiban_create | 创建任务，通知执行人 | `cuiban_create` |
+| `/add 任务名 邮箱/姓名 [日期]` | cuiban_create | 创建任务，通知执行人（默认 P1） | `cuiban_create` |
 
 ### 自然语言（转发给 AI，Anthropic tool calling 处理）
 

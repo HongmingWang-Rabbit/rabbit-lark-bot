@@ -1,5 +1,8 @@
 const pool = require('./pool');
 
+/** Normalize empty string to null for optional text fields */
+const nullIfEmpty = (v) => (v === '' || v === null || v === undefined ? null : v);
+
 const scheduledTasksDb = {
   async list() {
     const { rows } = await pool.query('SELECT * FROM scheduled_tasks ORDER BY created_at DESC');
@@ -18,9 +21,9 @@ const scheduledTasksDb = {
           deadline_days, priority, note, reminder_interval_hours, created_by)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
        RETURNING *`,
-      [name, title, targetOpenId, reporterOpenId ?? null, schedule,
+      [name, title, targetOpenId, nullIfEmpty(reporterOpenId), schedule,
        timezone ?? 'Asia/Shanghai', deadlineDays ?? 1, priority ?? 'p1',
-       note ?? null, reminderIntervalHours ?? 24, createdBy ?? null]
+       nullIfEmpty(note), reminderIntervalHours ?? 24, nullIfEmpty(createdBy)]
     );
     return rows[0];
   },
@@ -32,12 +35,13 @@ const scheduledTasksDb = {
     set('name', name);
     set('title', title);
     set('target_open_id', targetOpenId);
-    set('reporter_open_id', reporterOpenId);
+    // Normalize empty string to NULL for optional text fields
+    if (reporterOpenId !== undefined) set('reporter_open_id', nullIfEmpty(reporterOpenId));
     set('schedule', schedule);
     set('timezone', timezone);
     set('deadline_days', deadlineDays);
     set('priority', priority);
-    set('note', note);
+    if (note !== undefined) set('note', nullIfEmpty(note));
     set('reminder_interval_hours', reminderIntervalHours);
     set('enabled', enabled);
     if (!fields.length) return null;

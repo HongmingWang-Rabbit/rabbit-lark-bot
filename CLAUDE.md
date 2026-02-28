@@ -72,8 +72,9 @@ Feishu → POST /webhook/event → decrypt AES-256-CBC → dedup → auto-regist
 
 ### Key Server Modules
 - `src/routes/` — Express routes: `webhook.js`, `api.js`, `agent.js`, `users.js`, `auth.js`, `apiKeys.js`
-- `src/services/reminder.js` — Task CRUD, reminder scheduling, `sendPendingReminders()` runs every 15 min via `setInterval`
+- `src/services/reminder.js` — Task CRUD, reminder scheduling, `sendPendingReminders()` runs every 15 min; all Feishu notifications include priority badge (🔴🟡🟢)
 - `src/services/cuibanHandler.js` — Chat-based task commands (view/complete/create) + multi-step session selection
+- `src/services/scheduledTaskRunner.js` — node-cron based scheduler; `loadAll()` on startup, `reload()` after any `scheduled_tasks` CRUD; validates cron expressions before registering; timezone-aware
 - `src/services/agentForwarder.js` — Direct Anthropic API integration: lazy singleton client, builds system prompt (user context + registered users + date), runs agentic loop (max 5 rounds, max 10 concurrent via semaphore), executes `list_tasks`/`create_task`/`complete_task` tools, persists conversation history in `conversation_history` table (atomic CTE pruning), replies via `feishu.sendMessage()`; requires `ANTHROPIC_API_KEY`
 - `src/feishu/client.js` — Feishu REST API wrapper (messaging, user info, bitable); token cache with promise coalescing + retry-on-401
 - `src/middleware/auth.js` — `feishuWebhookAuth` (raw-body signature + encrypted payload), `sessionAuth` (JWT cookie → legacy API key fallback, sets `req.user` on all paths), `agentAuth` (env var + DB-backed API keys)

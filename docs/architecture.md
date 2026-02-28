@@ -59,9 +59,10 @@ src/
 │   ├── auth.js            # 认证路由（飞书 OAuth + 密码登录 + 会话管理）
 │   └── apiKeys.js         # Agent API Key CRUD（角色门控：admin/superadmin）
 ├── services/
-│   ├── reminder.js        # 催办任务：CRUD + 提醒 cron（make_interval 参数化）
-│   ├── agentForwarder.js  # 直接调用 Anthropic API（singleton client + tool calling + 对话历史 + 并发信号量 max 10）
-│   └── cuibanHandler.js   # 催办命令路由（view/complete/create）
+│   ├── reminder.js              # 催办任务：CRUD + 提醒 cron（priority badge in all messages）
+│   ├── agentForwarder.js        # 直接调用 Anthropic API（singleton client + tool calling + 对话历史）
+│   ├── cuibanHandler.js         # 催办命令路由（view/complete/create）
+│   └── scheduledTaskRunner.js   # cron 定时任务执行器（node-cron + timezone，启动时 loadAll）
 ├── db/
 │   ├── pool.js            # pg 连接池
 │   ├── users.js           # 用户 CRUD + autoProvision
@@ -138,6 +139,7 @@ CREATE TABLE tasks (
     reporter_open_id        VARCHAR(255),          -- 报告对象 open_id（完成/逾期时通知）
     deadline                TIMESTAMPTZ,
     status                  VARCHAR(20) NOT NULL DEFAULT 'pending', -- pending | completed
+    priority                VARCHAR(2) NOT NULL DEFAULT 'p1', -- p0=紧急, p1=一般, p2=不紧急
     reminder_interval_hours INTEGER NOT NULL DEFAULT 24,  -- 提醒间隔（0=关闭）
     last_reminded_at        TIMESTAMPTZ,           -- 上次定时提醒时间
     deadline_notified_at    TIMESTAMPTZ,           -- 截止逾期一次性通报时间
@@ -159,6 +161,30 @@ CREATE TABLE user_sessions (
     created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 ```
+
+### scheduled_tasks
+
+```sql
+CREATE TABLE scheduled_tasks (
+  id                      SERIAL PRIMARY KEY,
+  name                    VARCHAR(200) NOT NULL,    -- 显示名称（如"周报催办"）
+  title                   TEXT NOT NULL,            -- 每次触发时创建的任务标题
+  target_open_id          VARCHAR(255) NOT NULL,    -- 执行人 open_id（ou_xxx）
+  reporter_open_id        VARCHAR(255),             -- 完成时通知的报告人
+  schedule                VARCHAR(100) NOT NULL,    -- cron 表达式（如"0 6 * * 1"）
+  timezone                VARCHAR(100) NOT NULL DEFAULT 'Asia/Shanghai',
+  deadline_days           INTEGER NOT NULL DEFAULT 1,  -- 创建后几天截止
+  priority                VARCHAR(2) NOT NULL DEFAULT 'p1',
+  note                    TEXT,
+  reminder_interval_hours INTEGER NOT NULL DEFAULT 24,
+  enabled                 BOOLEAN NOT NULL DEFAULT true,
+  last_run_at             TIMESTAMPTZ,
+  created_by              VARCHAR(64),
+  created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+```
+
+每次 cron 触发时，`scheduledTaskRunner.js` 调用 `reminderService.createTask()`，自动创建真实任务并 DM 通知执行人。
 
 ### conversation_history
 

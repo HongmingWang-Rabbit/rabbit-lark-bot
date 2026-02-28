@@ -264,6 +264,14 @@ router.get('/scheduled-tasks', async (req, res) => {
   }
 });
 
+const VALID_PRIORITIES = ['p0', 'p1', 'p2'];
+
+// Helper: parse an integer that may validly be 0 (avoids `parseInt(x) || default` falsy-zero bug)
+function safeInt(val, fallback) {
+  const n = parseInt(val, 10);
+  return Number.isFinite(n) ? n : fallback;
+}
+
 // POST /api/scheduled-tasks
 router.post('/scheduled-tasks', async (req, res) => {
   try {
@@ -275,13 +283,16 @@ router.post('/scheduled-tasks', async (req, res) => {
     if (!cron.validate(schedule)) {
       return res.status(400).json({ error: `Invalid cron expression: ${schedule}` });
     }
+    if (priority && !VALID_PRIORITIES.includes(priority)) {
+      return res.status(400).json({ error: `Invalid priority: ${priority}. Must be p0, p1, or p2` });
+    }
     const st = await scheduledTasksDb.create({
       name, title, targetOpenId, reporterOpenId, schedule,
       timezone: timezone || 'Asia/Shanghai',
-      deadlineDays: parseInt(deadlineDays) || 1,
+      deadlineDays: Math.max(0, safeInt(deadlineDays, 1)),
       priority: priority || 'p1',
       note,
-      reminderIntervalHours: parseInt(reminderIntervalHours) || 24,
+      reminderIntervalHours: Math.max(0, safeInt(reminderIntervalHours, 24)),
       createdBy: resolveActor(req),
     });
     await reloadScheduler();
@@ -301,11 +312,14 @@ router.patch('/scheduled-tasks/:id', async (req, res) => {
     if (schedule !== undefined && !cron.validate(schedule)) {
       return res.status(400).json({ error: `Invalid cron expression: ${schedule}` });
     }
+    if (priority !== undefined && !VALID_PRIORITIES.includes(priority)) {
+      return res.status(400).json({ error: `Invalid priority: ${priority}. Must be p0, p1, or p2` });
+    }
     const st = await scheduledTasksDb.update(id, {
       name, title, targetOpenId, reporterOpenId, schedule, timezone,
-      deadlineDays: deadlineDays !== undefined ? parseInt(deadlineDays) : undefined,
+      deadlineDays: deadlineDays !== undefined ? Math.max(0, safeInt(deadlineDays, 1)) : undefined,
       priority, note,
-      reminderIntervalHours: reminderIntervalHours !== undefined ? parseInt(reminderIntervalHours) : undefined,
+      reminderIntervalHours: reminderIntervalHours !== undefined ? Math.max(0, safeInt(reminderIntervalHours, 24)) : undefined,
       enabled,
     });
     if (!st) return res.status(404).json({ error: 'Not found' });

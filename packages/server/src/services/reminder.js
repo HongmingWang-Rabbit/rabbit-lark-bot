@@ -14,6 +14,13 @@ const DEFAULT_DEADLINE_DAYS = parseInt(process.env.DEFAULT_DEADLINE_DAYS, 10) ||
 const DEFAULT_REMINDER_INTERVAL_HOURS = parseInt(process.env.DEFAULT_REMINDER_INTERVAL_HOURS, 10) || 24;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
+/** Returns a short priority badge string for Feishu messages */
+function priorityBadge(p) {
+  if (p === 'p0') return '🔴 [P0 紧急]';
+  if (p === 'p2') return '🟢 [P2 不紧急]';
+  return '🟡 [P1 一般]';
+}
+
 // ── Queries ───────────────────────────────────────────────────────────────────
 
 /**
@@ -119,17 +126,13 @@ async function createTask({ title, assigneeId, assigneeOpenId, assigneeName, dea
       .catch(() => {});
   }
 
-  // Priority badge helper
-  const priorityBadgeMap = { p0: '🔴 [P0 紧急]', p1: '🟡 [P1 一般]', p2: '🟢 [P2 不紧急]' };
-  const priorityBadge = priorityBadgeMap[resolvedPriority] || '🟡 [P1 一般]';
-
   // Notify assignee via direct Feishu message
   if (assigneeOpenId) {
     const deadlineStr = deadlineDate.toLocaleDateString('zh-CN', { month: 'long', day: 'numeric' });
     const reminderNote = intervalHours > 0 ? `\n⏰ 每 ${intervalHours} 小时提醒一次` : '';
     const notifyMsg =
       `📋 你收到一个新的催办任务：\n\n` +
-      `${priorityBadge} 「${title}」\n` +
+      `${priorityBadge(resolvedPriority)} 「${title}」\n` +
       `📅 截止：${deadlineStr}${reminderNote}\n\n` +
       `发送「完成」标记任务已完成`;
 
@@ -307,7 +310,7 @@ async function sendPendingReminders() {
         if (task.assignee_open_id) {
           const assigneeMsg =
             `🚨 催办任务已逾期，请尽快完成：\n\n` +
-            `📋 「${task.title}」\n` +
+            `${priorityBadge(task.priority)} 「${task.title}」\n` +
             `📅 截止时间：${deadlineStr}（已过期）\n\n` +
             `发送「完成」标记任务已完成`;
           await feishu.sendMessage(task.assignee_open_id, assigneeMsg, 'open_id').catch((err) => {
@@ -318,7 +321,7 @@ async function sendPendingReminders() {
         if (task.reporter_open_id) {
           const reporterMsg =
             `📢 催办任务逾期通报：\n\n` +
-            `📋 「${task.title}」\n` +
+            `${priorityBadge(task.priority)} 「${task.title}」\n` +
             `📅 截止时间：${deadlineStr}\n` +
             `🔴 状态：已逾期，执行人尚未完成\n\n` +
             `系统将继续每 ${task.reminder_interval_hours} 小时提醒执行人`;
@@ -387,7 +390,7 @@ async function sendPendingReminders() {
         const overdueTag = isOverdue ? '⚠️ 已逾期！\n' : '';
         const msg =
           `⏰ 催办提醒：\n\n` +
-          `${overdueTag}📋 「${task.title}」\n` +
+          `${overdueTag}${priorityBadge(task.priority)} 「${task.title}」\n` +
           `📅 截止：${deadlineStr}\n\n` +
           `发送「完成」标记任务已完成`;
 
