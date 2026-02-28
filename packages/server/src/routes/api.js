@@ -18,7 +18,7 @@ function resolveActor(req) {
 
 router.get('/dashboard', async (req, res) => {
   try {
-    const [taskStats, userCount, adminList, recentLogs] = await Promise.all([
+    const [taskStats, userCount, adminCount, recentLogs] = await Promise.all([
       pool.query(`
         SELECT
           COUNT(*)::int AS total,
@@ -27,7 +27,8 @@ router.get('/dashboard', async (req, res) => {
         FROM tasks
       `),
       pool.query('SELECT COUNT(*)::int AS count FROM users'),
-      admins.list(),
+      // Count admins from users.role (authoritative), not the legacy admins table
+      pool.query(`SELECT COUNT(*)::int AS count FROM users WHERE role IN ('admin', 'superadmin')`),
       audit.list({ limit: 10 }),
     ]);
 
@@ -38,7 +39,7 @@ router.get('/dashboard', async (req, res) => {
         totalTasks: stats.total,
         pendingTasks: stats.pending,
         completedTasks: stats.completed,
-        adminCount: adminList.length,
+        adminCount: adminCount.rows[0].count,
         totalUsers: userCount.rows[0].count,
       },
       builtinEnabled,
