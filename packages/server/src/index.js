@@ -2,15 +2,18 @@ require('dotenv').config({ path: require('path').join(__dirname, '../../../.env'
 
 const express = require('express');
 const cors = require('cors');
+const cookieParser = require('cookie-parser');
 const { pool } = require('./db');
 const logger = require('./utils/logger');
 const { validateEnv } = require('./utils/validateEnv');
-const { apiAuth, agentAuth, feishuWebhookAuth } = require('./middleware/auth');
+const { sessionAuth, agentAuth, feishuWebhookAuth } = require('./middleware/auth');
 const { rateLimits, limiter } = require('./middleware/rateLimit');
 const webhookRoutes = require('./routes/webhook');
 const apiRoutes = require('./routes/api');
 const agentRoutes = require('./routes/agent');
 const userRoutes = require('./routes/users');
+const authRoutes = require('./routes/auth');
+const apiKeyRoutes = require('./routes/apiKeys');
 const { sendPendingReminders } = require('./services/reminder');
 const sessions = require('./db/sessions');
 
@@ -23,20 +26,22 @@ const PORT = process.env.PORT || 3456;
 // Middleware
 app.use(cors({
   origin: process.env.CORS_ORIGIN || (process.env.NODE_ENV === 'production' ? false : '*'),
+  credentials: true,
 }));
 app.use(express.json({
   limit: '1mb',
   // Preserve raw body for webhook signature verification
   verify: (req, _res, buf) => { req.rawBody = buf; },
 }));
+app.use(cookieParser());
 app.use(logger.middleware);
 
 // Health check
 app.get('/health', async (req, res) => {
   try {
     await pool.query('SELECT 1');
-    res.json({ 
-      status: 'ok', 
+    res.json({
+      status: 'ok',
       timestamp: new Date().toISOString(),
       version: process.env.npm_package_version || '1.0.0',
     });
@@ -47,11 +52,14 @@ app.get('/health', async (req, res) => {
 
 // Routes with middleware
 app.use('/webhook', rateLimits.webhook, feishuWebhookAuth, webhookRoutes);
+// Auth routes — no auth middleware (they handle their own)
+app.use('/api/auth', rateLimits.api, authRoutes);
 // Agent routes use AGENT_API_KEY auth (separate from web API_KEY)
 // Must be registered before /api to take precedence
 app.use('/api/agent', rateLimits.api, agentAuth, agentRoutes);
 apiRoutes.use('/users', userRoutes);
-app.use('/api', rateLimits.api, apiAuth, apiRoutes);
+apiRoutes.use('/api-keys', apiKeyRoutes);
+app.use('/api', rateLimits.api, sessionAuth, apiRoutes);
 
 // 404 handler
 app.use((req, res) => {

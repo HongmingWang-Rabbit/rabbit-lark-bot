@@ -1,64 +1,112 @@
 'use client';
 
-import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
 
-// TODO: This is client-side auth — the password is embedded in the JS bundle
-// via NEXT_PUBLIC_ADMIN_PASSWORD and the auth state is a boolean in localStorage.
-// Both are trivially bypassable via browser DevTools. For production use, migrate
-// to server-side auth with signed session tokens (e.g., Next.js API route + cookie).
-const PASSWORD = process.env.NEXT_PUBLIC_ADMIN_PASSWORD || '';
-const STORAGE_KEY = 'rabbit_lark_authed';
+export interface AuthUser {
+  userId: string;
+  name: string | null;
+  email: string | null;
+  role: 'superadmin' | 'admin' | 'user';
+  avatarUrl: string | null;
+}
 
 interface AuthCtx {
   authed: boolean;
-  login: (pw: string) => boolean;
-  logout: () => void;
+  user: AuthUser | null;
+  loading: boolean;
+  loginWithPassword: (password: string) => Promise<{ success: boolean; error?: string }>;
+  logout: () => Promise<void>;
+  feishuOAuthUrl: string;
 }
 
-const AuthContext = createContext<AuthCtx>({ authed: false, login: () => false, logout: () => {} });
+const AuthContext = createContext<AuthCtx>({
+  authed: false,
+  user: null,
+  loading: true,
+  loginWithPassword: async () => ({ success: false }),
+  logout: async () => {},
+  feishuOAuthUrl: '/api/auth/feishu',
+});
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [authed, setAuthed] = useState(false);
-  const [checked, setChecked] = useState(false);
+  const [user, setUser] = useState<AuthUser | null>(null);
+  const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    setAuthed(localStorage.getItem(STORAGE_KEY) === 'true');
-    setChecked(true);
+  const checkSession = useCallback(async () => {
+    try {
+      const res = await fetch('/api/auth/me', { credentials: 'include' });
+      const data = await res.json();
+      if (data.authed && data.user) {
+        setUser(data.user);
+      } else {
+        setUser(null);
+      }
+    } catch {
+      setUser(null);
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
-  function login(pw: string) {
-    if (pw === PASSWORD) {
-      localStorage.setItem(STORAGE_KEY, 'true');
-      setAuthed(true);
-      return true;
+  useEffect(() => {
+    checkSession();
+  }, [checkSession]);
+
+  const loginWithPassword = useCallback(async (password: string) => {
+    try {
+      const res = await fetch('/api/auth/password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ password }),
+      });
+      const data = await res.json();
+
+      if (res.ok && data.success) {
+        // Re-check session to get full user info
+        await checkSession();
+        return { success: true };
+      }
+      return { success: false, error: data.error || '登录失败' };
+    } catch {
+      return { success: false, error: '网络错误，请重试' };
     }
-    return false;
-  }
+  }, [checkSession]);
 
-  function logout() {
-    localStorage.removeItem(STORAGE_KEY);
-    setAuthed(false);
-  }
+  const logout = useCallback(async () => {
+    try {
+      await fetch('/api/auth/logout', {
+        method: 'POST',
+        credentials: 'include',
+      });
+    } finally {
+      setUser(null);
+    }
+  }, []);
 
-  if (!checked) return null;
-
-  if (!PASSWORD) {
+  if (loading) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="bg-white rounded-xl shadow-md p-8 w-full max-w-sm text-center">
-          <div className="text-4xl mb-2">🔒</div>
-          <h1 className="text-xl font-bold text-gray-900 mb-2">管理后台未配置</h1>
-          <p className="text-sm text-gray-500">
-            请设置环境变量 <code className="bg-gray-100 px-1.5 py-0.5 rounded text-xs font-mono">NEXT_PUBLIC_ADMIN_PASSWORD</code> 后重启服务。
-          </p>
+        <div className="text-center" role="status">
+          <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500" aria-hidden="true" />
+          <p className="mt-2 text-gray-500">加载中...</p>
         </div>
       </div>
     );
   }
 
+  const authed = !!user;
+
   return (
-    <AuthContext.Provider value={{ authed, login, logout }}>
-      {authed ? children : <LoginScreen login={login} />}
+    <AuthContext.Provider value={{
+      authed,
+      user,
+      loading,
+      loginWithPassword,
+      logout,
+      feishuOAuthUrl: '/api/auth/feishu',
+    }}>
+      {authed ? children : <LoginScreen loginWithPassword={loginWithPassword} />}
     </AuthContext.Provider>
   );
 }
@@ -70,13 +118,15 @@ export function useAuth() {
 const MAX_LOGIN_ATTEMPTS = 5;
 const LOCKOUT_MS = 60_000; // 1 minute
 
-function LoginScreen({ login }: { login: (pw: string) => boolean }) {
+function LoginScreen({ loginWithPassword }: { loginWithPassword: AuthCtx['loginWithPassword'] }) {
   const [pw, setPw] = useState('');
   const [error, setError] = useState('');
+  const [submitting, setSubmitting] = useState(false);
   const [attempts, setAttempts] = useState(0);
   const [lockedUntil, setLockedUntil] = useState(0);
+  const [showPassword, setShowPassword] = useState(false);
 
-  function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
 
     if (Date.now() < lockedUntil) {
@@ -85,7 +135,12 @@ function LoginScreen({ login }: { login: (pw: string) => boolean }) {
       return;
     }
 
-    if (!login(pw)) {
+    setSubmitting(true);
+    setError('');
+
+    const result = await loginWithPassword(pw);
+
+    if (!result.success) {
       const next = attempts + 1;
       setAttempts(next);
       if (next >= MAX_LOGIN_ATTEMPTS) {
@@ -93,10 +148,12 @@ function LoginScreen({ login }: { login: (pw: string) => boolean }) {
         setError(`连续错误 ${MAX_LOGIN_ATTEMPTS} 次，锁定 1 分钟`);
         setAttempts(0);
       } else {
-        setError('密码错误');
+        setError(result.error || '密码错误');
       }
       setPw('');
     }
+
+    setSubmitting(false);
   }
 
   return (
@@ -107,26 +164,50 @@ function LoginScreen({ login }: { login: (pw: string) => boolean }) {
           <h1 className="text-xl font-bold text-gray-900">Rabbit Lark Bot</h1>
           <p className="text-sm text-gray-500 mt-1">管理后台</p>
         </div>
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">密码</label>
-            <input
-              type="password"
-              value={pw}
-              onChange={e => { setPw(e.target.value); setError(''); }}
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-              placeholder="请输入密码"
-              autoFocus
-            />
-          </div>
-          {error && <p className="text-red-500 text-sm">{error}</p>}
+
+        {/* Feishu OAuth — primary */}
+        <a
+          href="/api/auth/feishu"
+          className="w-full flex items-center justify-center gap-2 bg-blue-600 text-white rounded-lg py-2.5 font-medium hover:bg-blue-700 transition-colors mb-4"
+        >
+          飞书账号登录
+        </a>
+
+        {/* Password — collapsible fallback */}
+        <div className="border-t pt-4">
           <button
-            type="submit"
-            className="w-full bg-blue-600 text-white rounded-lg py-2 font-medium hover:bg-blue-700 transition-colors"
+            type="button"
+            onClick={() => setShowPassword(!showPassword)}
+            className="w-full text-sm text-gray-400 hover:text-gray-600 transition-colors text-center"
           >
-            登录
+            {showPassword ? '收起密码登录' : '使用密码登录'}
           </button>
-        </form>
+
+          {showPassword && (
+            <form onSubmit={handleSubmit} className="mt-3 space-y-3">
+              <div>
+                <input
+                  type="password"
+                  value={pw}
+                  onChange={e => { setPw(e.target.value); setError(''); }}
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  placeholder="请输入密码"
+                  aria-label="密码"
+                  disabled={submitting}
+                  autoFocus
+                />
+              </div>
+              {error && <p className="text-red-500 text-sm">{error}</p>}
+              <button
+                type="submit"
+                disabled={submitting || !pw}
+                className="w-full bg-gray-600 text-white rounded-lg py-2 font-medium hover:bg-gray-700 transition-colors disabled:opacity-50"
+              >
+                {submitting ? '登录中...' : '登录'}
+              </button>
+            </form>
+          )}
+        </div>
       </div>
     </div>
   );

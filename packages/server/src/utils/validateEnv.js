@@ -23,6 +23,9 @@ function validateEnv() {
     'ENABLE_BUILTIN_BOT',
     'CORS_ORIGIN',
     'REQUIRE_AUTH',
+    'JWT_SECRET',
+    'ADMIN_PASSWORD',
+    'FEISHU_OAUTH_REDIRECT_URI',
   ];
 
   const missing = [];
@@ -64,13 +67,20 @@ function validateEnv() {
   if (!process.env.CORS_ORIGIN) {
     warnings.push('CORS_ORIGIN not set - CORS allows all origins (*)');
   }
+  if (!process.env.JWT_SECRET) {
+    warnings.push('JWT_SECRET not set - web sessions use ephemeral secret (lost on restart)');
+  }
 
   if (warnings.length > 0) {
     if (process.env.NODE_ENV === 'production') {
       logger.error('Production security warnings — fix before deploying', { warnings });
       // Critical security vars must be set in production
-      if (!process.env.API_KEY || !process.env.FEISHU_ENCRYPT_KEY) {
-        logger.error('Refusing to start: API_KEY and FEISHU_ENCRYPT_KEY are required in production');
+      if (!process.env.FEISHU_ENCRYPT_KEY) {
+        logger.error('Refusing to start: FEISHU_ENCRYPT_KEY is required in production');
+        process.exit(1);
+      }
+      if (!process.env.JWT_SECRET) {
+        logger.error('Refusing to start: JWT_SECRET is required in production');
         process.exit(1);
       }
       if (!process.env.AGENT_API_KEY) {

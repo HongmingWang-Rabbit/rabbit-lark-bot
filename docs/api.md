@@ -4,18 +4,38 @@ Base URL: `http://your-server:3456`
 
 ## 认证
 
+### Web 管理 API (`/api/*`)
+
+Web 管理后台使用 **JWT session cookie** 认证（`rlk_session`，httpOnly，7d 过期）。
+
+**登录方式：**
+1. **飞书 OAuth SSO**（主）— 点击"飞书账号登录" → 授权回调 → 自动设置 cookie
+2. **密码登录**（备选）— `POST /api/auth/password` → 验证 `ADMIN_PASSWORD` 环境变量 → 设置 cookie
+
+**向后兼容：** 旧的 API Key 认证方式仍然支持：
 ```
 X-API-Key: your_api_key
 # 或
 Authorization: Bearer your_api_key
 ```
+`sessionAuth` 中间件检查顺序：JWT cookie → X-API-Key / Bearer（匹配 `API_KEY` 环境变量）。
 
-认证行为按环境变化：
+**环境行为：**
 - `NODE_ENV=development` 且未设置 `REQUIRE_AUTH`：跳过认证
-- `NODE_ENV=production` 且未设置 `API_KEY`：拒绝所有请求（500）
-- 其他环境（test、staging 等）未设置 `API_KEY`：拒绝所有请求（500）
+- `NODE_ENV=production` 且未设置 `JWT_SECRET`：拒绝启动
+- 其他环境无任何认证配置：允许访问（仅开发用）
 
-API Key 比较使用 SHA-256 哈希 + `crypto.timingSafeEqual`，防止长度和时序侧信道攻击。
+### Agent API (`/api/agent/*`)
+
+Agent 端点使用 `agentAuth` 中间件，检查顺序：
+1. **环境变量 key** — `AGENT_API_KEY` 或 `API_KEY`（SHA-256 + timingSafeEqual）
+2. **DB-backed API key** — 在 `agent_api_keys` 表中查找 SHA-256 哈希（管理后台 /api-keys 页面创建）
+
+```
+Authorization: Bearer rlk_xxxxxxxxxxxxxxxxxxxxxxxxxxxx
+# 或
+X-API-Key: your_agent_api_key
+```
 
 ## 限流
 
@@ -60,6 +80,166 @@ API Key 比较使用 SHA-256 哈希 + `crypto.timingSafeEqual`，防止长度和
 // 响应
 { "challenge": "xxx" }
 ```
+
+---
+
+## 认证端点
+
+认证路由不需要预先认证（它们自己处理认证）。
+
+### GET /api/auth/feishu
+
+重定向到飞书 OAuth 授权页面。设置 CSRF state cookie（`rlk_oauth_state`，5 分钟有效）。
+
+**前置要求：**
+- `FEISHU_APP_ID` 和 `FEISHU_OAUTH_REDIRECT_URI` 环境变量已配置
+- 飞书开放平台 → 安全设置 → 已添加重定向 URL
+
+### GET /api/auth/feishu/callback
+
+OAuth 回调，由飞书服务器重定向至此。验证 CSRF state → 换取 access_token → 获取用户信息 → 自动注册/更新用户 → 设置 JWT cookie → 重定向到 `/`。
+
+### POST /api/auth/password
+
+密码登录（备选方案）。
+
+**Request Body：**
+```json
+{
+  "password": "your_admin_password"
+}
+```
+
+**Response（成功）：**
+```json
+{
+  "success": true,
+  "user": {
+    "userId": "password_admin",
+    "name": "管理员",
+    "role": "superadmin"
+  }
+}
+```
+
+**错误：**
+- `400` — 缺少 password
+- `401` — 密码错误
+- `429` — 请求过多（服务端限流：5 次/IP/分钟）
+- `500` — 未配置 `ADMIN_PASSWORD` 环境变量
+
+### GET /api/auth/me
+
+检查当前会话状态。
+
+**Response（已登录）：**
+```json
+{
+  "authed": true,
+  "user": {
+    "userId": "user@company.com",
+    "name": "张三",
+    "email": "user@company.com",
+    "role": "admin",
+    "avatarUrl": "https://..."
+  }
+}
+```
+
+**Response（未登录）：**
+```json
+{
+  "authed": false
+}
+```
+
+### POST /api/auth/logout
+
+清除 JWT session cookie。
+
+**Response：**
+```json
+{ "success": true }
+```
+
+---
+
+## API Key 管理
+
+需要 `sessionAuth` 认证，且**必须为 admin 或 superadmin 角色**（非管理员返回 `403 Forbidden`）。
+
+### GET /api/api-keys
+
+获取所有 API Key 列表（不含原始 key）。
+
+**Response：**
+```json
+[
+  {
+    "id": 1,
+    "name": "MCP Prod",
+    "key_prefix": "rlk_abcd",
+    "created_by": "user@company.com",
+    "created_at": "2026-02-28T10:00:00.000Z",
+    "last_used_at": "2026-02-28T12:00:00.000Z",
+    "revoked_at": null
+  }
+]
+```
+
+### POST /api/api-keys
+
+创建新 API Key。返回原始 key（仅此一次）。
+
+**Request Body：**
+```json
+{
+  "name": "MCP Prod"
+}
+```
+
+**Response（`201 Created`）：**
+```json
+{
+  "id": 1,
+  "name": "MCP Prod",
+  "key_prefix": "rlk_abcd",
+  "created_by": "user@company.com",
+  "created_at": "2026-02-28T10:00:00.000Z",
+  "key": "rlk_abcd1234abcd1234abcd1234abcd1234"
+}
+```
+
+> **重要：** `key` 字段仅在创建时返回一次，之后无法再次获取。请立即复制保存。
+
+**验证规则：**
+- `name` 必填，1-100 字符
+
+**错误：**
+- `400` — 缺少 name 或超过 100 字符
+- `403` — 非 admin/superadmin 角色
+
+### DELETE /api/api-keys/:id
+
+软撤销 API Key（设置 `revoked_at`，不删除记录）。
+
+**Response：**
+```json
+{
+  "success": true,
+  "revoked": {
+    "id": 1,
+    "name": "MCP Prod",
+    "key_prefix": "rlk_abcd",
+    "revoked_at": "2026-02-28T14:00:00.000Z"
+  }
+}
+```
+
+**错误：**
+- `400` — Invalid key ID
+- `403` — 非 admin/superadmin 角色
+- `404` — Key 不存在或已撤销
 
 ---
 
@@ -349,7 +529,7 @@ API Key 比较使用 SHA-256 哈希 + `crypto.timingSafeEqual`，防止长度和
 - `action` — 按操作类型过滤
 
 **Action 类型：**
-`create_task` / `complete_task` / `delete_task` / `add_admin` / `remove_admin` / `update_settings`
+`create_task` / `complete_task` / `delete_task` / `add_admin` / `remove_admin` / `update_settings` / `create_api_key` / `revoke_api_key`
 
 ---
 

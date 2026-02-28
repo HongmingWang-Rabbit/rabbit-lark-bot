@@ -40,8 +40,8 @@
          │
          ▼
     PostgreSQL
-  (users/tasks/sessions/
-   audit_logs/conversation_history)
+  (users/tasks/sessions/audit_logs/
+   conversation_history/agent_api_keys)
 ```
 
 ## 包结构
@@ -55,7 +55,9 @@ src/
 │   ├── webhook.js         # 飞书事件处理，意图路由
 │   ├── api.js             # 管理 API（tasks/admins/settings/audit）
 │   ├── agent.js           # AI Agent 回复 API
-│   └── users.js           # 用户管理 API
+│   ├── users.js           # 用户管理 API
+│   ├── auth.js            # 认证路由（飞书 OAuth + 密码登录 + 会话管理）
+│   └── apiKeys.js         # Agent API Key CRUD（角色门控：admin/superadmin）
 ├── services/
 │   ├── reminder.js        # 催办任务：CRUD + 提醒 cron（make_interval 参数化）
 │   ├── agentForwarder.js  # 直接调用 Anthropic API（singleton client + tool calling + 对话历史 + 并发信号量 max 10）
@@ -64,17 +66,19 @@ src/
 │   ├── pool.js            # pg 连接池
 │   ├── users.js           # 用户 CRUD + autoProvision
 │   ├── sessions.js        # DB-backed 会话（5分钟 TTL）
+│   ├── apiKeys.js         # Agent API Key CRUD（SHA-256 哈希存储）
 │   └── index.js           # admins / settings / audit helpers
 ├── features/
 │   └── index.js           # 功能注册表 + resolveFeatures()
 ├── feishu/
 │   └── client.js          # Feishu REST API（消息/联系人/多维表格）
 ├── middleware/
-│   ├── auth.js            # feishuWebhookAuth（签名+解密）+ apiAuth（SHA-256 + timingSafeEqual）
+│   ├── auth.js            # feishuWebhookAuth（签名+解密）+ sessionAuth（JWT cookie + 旧 API key 兼容）+ agentAuth（环境变量 + DB key）
 │   └── rateLimit.js       # 内存限流（API 100/min，Webhook 200/min，10k cap，批量淘汰 ~10%，单实例）
 └── utils/
     ├── intentDetector.js  # 消息意图分类
     ├── menuBuilder.js     # 动态权限菜单
+    ├── jwt.js             # JWT 签发/验证 + cookie 配置
     ├── logger.js          # 自定义结构化日志（文件轮转 + stdout）
     ├── safeError.js       # 生产环境安全错误消息
     └── validateEnv.js     # 启动时环境变量校验
@@ -88,13 +92,15 @@ src/
 │   ├── page.tsx            # Dashboard（统计 + 近期活动）
 │   ├── tasks/page.tsx      # 催办任务管理
 │   ├── users/page.tsx      # 用户管理（角色/功能/信息）
+│   ├── settings/page.tsx   # 系统设置
+│   ├── api-keys/page.tsx   # Agent API Key 管理（创建/撤销）
 │   └── layout.tsx / NavBar.tsx
 ├── components/
 │   ├── UserCombobox.tsx    # 用户搜索下拉（按姓名/邮箱过滤，返回 openId）
 │   └── StatusStates.tsx    # 共享加载/错误/空状态组件
 └── lib/
-    ├── api.ts              # API 客户端 + TypeScript 类型 + SWR_KEYS
-    └── auth.tsx            # 客户端密码认证（AuthProvider + LoginScreen）
+    ├── api.ts              # API 客户端 + TypeScript 类型 + SWR_KEYS（credentials: include）
+    └── auth.tsx            # 服务端会话认证（飞书 OAuth + 密码备选 + JWT cookie）
 ```
 
 ---
@@ -114,6 +120,7 @@ CREATE TABLE users (
     phone           VARCHAR(50),
     role            VARCHAR(20) NOT NULL DEFAULT 'user', -- superadmin/admin/user
     configs         JSONB NOT NULL DEFAULT '{}',  -- 每用户功能覆盖
+    avatar_url      TEXT,                          -- 头像 URL（OAuth 登录时更新）
     created_at      TIMESTAMP DEFAULT NOW(),
     updated_at      TIMESTAMP DEFAULT NOW()
 );
@@ -165,6 +172,23 @@ CREATE TABLE conversation_history (
 );
 CREATE INDEX idx_conv_history_chat ON conversation_history(chat_id, created_at DESC);
 ```
+
+### agent_api_keys
+
+```sql
+CREATE TABLE agent_api_keys (
+    id           SERIAL PRIMARY KEY,
+    name         VARCHAR(100) NOT NULL,
+    key_hash     CHAR(64) NOT NULL UNIQUE,     -- SHA-256 hex
+    key_prefix   CHAR(8) NOT NULL,             -- "rlk_xxxx" for display
+    created_by   VARCHAR(64) NOT NULL,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_used_at TIMESTAMPTZ,
+    revoked_at   TIMESTAMPTZ                   -- NULL = active
+);
+```
+
+DB-backed API keys for agent authentication. Raw key returned only once at creation; stored as SHA-256 hash. Supports soft-revoke via `revoked_at`. Used by `agentAuth` middleware as fallback after env var check.
 
 每个 chat_id 最多保留 20 条历史（通过原子 CTE 在 INSERT 时自动删除旧记录），用于给 Claude 提供多轮对话上下文。Schema 通过 `db/migrations/008_add_conversation_history.sql` 创建。
 
@@ -366,11 +390,14 @@ services:
 - `POSTGRES_PASSWORD` 必须在 `.env` 中设置（`${VAR:?}` 语法，缺失时 compose 启动失败）
 - Server 容器通过 `extra_hosts: host.docker.internal` 访问宿主机上的 AI Agent
 - 服务间通过 `condition: service_healthy` 确保启动顺序
-- Server 环境变量：`DATABASE_URL`, `FEISHU_APP_ID`, `FEISHU_APP_SECRET`, `FEISHU_ENCRYPT_KEY`, `API_KEY`, `CORS_ORIGIN`, `ANTHROPIC_API_KEY`, `AGENT_API_KEY`, `ENABLE_BUILTIN_BOT`, `API_BASE_URL`, `LOG_LEVEL`
+- Server 环境变量：`DATABASE_URL`, `FEISHU_APP_ID`, `FEISHU_APP_SECRET`, `FEISHU_ENCRYPT_KEY`, `JWT_SECRET`, `API_KEY`, `ADMIN_PASSWORD`, `FEISHU_OAUTH_REDIRECT_URI`, `CORS_ORIGIN`, `ANTHROPIC_API_KEY`, `AGENT_API_KEY`, `ENABLE_BUILTIN_BOT`, `API_BASE_URL`, `LOG_LEVEL`
+  - `JWT_SECRET` — 必填（生产环境）：签发 Web 管理后台 session JWT
+  - `ADMIN_PASSWORD` — 可选：密码备选登录方案
+  - `FEISHU_OAUTH_REDIRECT_URI` — 可选：飞书 OAuth 回调地址（配置后支持飞书扫码登录）
   - `ANTHROPIC_API_KEY` — 必填（缺失时 AI 功能禁用，仅关键字命令可用）
-  - `AGENT_API_KEY` — `/api/agent/*` 端点的认证 key（独立于 API_KEY）
-  - ~~`AGENT_WEBHOOK_URL`~~ — 已废弃，agentForwarder 不再转发消息到外部 agent
-- Web 构建参数：`NEXT_PUBLIC_ADMIN_PASSWORD`, `NEXT_PUBLIC_API_KEY`（通过 Docker build args 注入，因为 Next.js `NEXT_PUBLIC_*` 变量在构建时内联）
+  - `AGENT_API_KEY` — `/api/agent/*` 端点的认证 key（也支持 DB-backed API keys）
+  - `API_KEY` — 向后兼容旧 API 认证方式（新部署可选）
+- Web 不再需要 `NEXT_PUBLIC_ADMIN_PASSWORD` 和 `NEXT_PUBLIC_API_KEY`（认证已迁移至服务端 JWT session cookie）
 
 ### 数据库迁移
 
@@ -385,6 +412,7 @@ services:
 006_add_user_sessions.sql      DB 持久化会话
 007_add_deadline_notified_at.sql  截止逾期一次性通报字段
 008_add_conversation_history.sql  AI 对话历史表（从 runtime DDL 迁移）
+009_add_auth_tables.sql           Agent API Keys 表 + users.avatar_url 字段
 ```
 
 ---
@@ -396,7 +424,9 @@ services:
 | Webhook 签名 | SHA-256 签名验证基于原始请求 body 字节（`express.json({ verify })` 保留 raw body Buffer）；仅在 FEISHU_ENCRYPT_KEY 已配置时启用 |
 | Webhook 解密 | AES-256-CBC，key = SHA256(FEISHU_ENCRYPT_KEY)；加密体跳过签名验证（解密本身即认证） |
 | 事件去重 | 内存 Map，event_id，5 分钟 TTL（单实例，多实例无法共享） |
-| API 鉴权 | SHA-256 哈希 + `crypto.timingSafeEqual`，防止长度和时序侧信道；未设 API_KEY 时仅 `NODE_ENV=development` 放行 |
+| Web 认证 | JWT httpOnly cookie（7d 过期）；飞书 OAuth SSO（主）+ 密码登录（备选）；`sessionAuth` 中间件优先检查 JWT cookie，回退到旧 API_KEY 兼容 |
+| Agent 认证 | `agentAuth` 中间件：先检查 AGENT_API_KEY/API_KEY 环境变量（SHA-256 + timingSafeEqual），再检查 DB-backed API keys（`agent_api_keys` 表） |
+| API Key 管理 | DB 存储 SHA-256 哈希，raw key 仅创建时返回一次；支持软撤销（`revoked_at`）；`last_used_at` fire-and-forget 更新 |
 | Body 大小限制 | `express.json({ limit: '1mb' })` 防止超大 payload |
 | 限流 | 自定义内存 rate limiter：API 100/min，Webhook 200/min，上限 10,000 条目（超限时批量淘汰 ~10%）；单实例，多实例阈值 = N 倍 |
 | 设置白名单 | `PUT /settings/:key` 仅接受预定义 key（`VALID_SETTING_KEYS`），防止任意键注入 |
@@ -405,6 +435,10 @@ services:
 | 错误屏蔽 | 生产环境（`NODE_ENV=production`）错误响应替换为通用描述，不暴露内部细节 |
 | 日志安全 | 用户 ID 不包含在错误消息中 |
 | CORS | 可通过 `CORS_ORIGIN` 限制允许的跨域来源，默认 `*` |
-| 登录保护 | Web 管理后台连续 5 次密码错误后锁定 1 分钟 |
+| 登录保护 | 服务端限流（5 次/IP/分钟，`passwordRateLimit` 中间件）+ 客户端限流（5 次连续错误后锁定 1 分钟）|
+| OAuth CSRF | 飞书 OAuth 使用随机 state cookie 防止 CSRF 攻击（常量时间比较 `timingSafeEqual`） |
+| JWT 算法白名单 | `jwt.verify` 固定 `algorithms: ['HS256']`，防止算法混淆攻击 |
+| API Key 角色门控 | `/api/api-keys` 路由要求 admin/superadmin 角色（返回 403），非管理员无法查看或创建 |
+| OAuth 超时 | 飞书 OAuth 回调中 HTTP 请求设置 `AbortSignal.timeout(10_000)`，防止外部服务挂起 |
 | Agent 并发 | `agentForwarder` 限制最多 10 个并发 Anthropic API 调用（信号量模式），防止负载下耗尽连接或触发速率限制 |
 | Agent 任务归属 | `complete_task` 工具和 `/api/agent/tasks/:id/complete` 均校验调用者是否为任务的 assignee |

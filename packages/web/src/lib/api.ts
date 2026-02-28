@@ -100,6 +100,16 @@ export interface ApiError {
   error: string;
 }
 
+export interface AgentApiKey {
+  id: number;
+  name: string;
+  key_prefix: string;
+  created_by: string;
+  created_at: string;
+  last_used_at: string | null;
+  revoked_at: string | null;
+}
+
 // ============ SWR cache key constants ============
 // Use these in useSWR() and mutate() to ensure consistent cache keys across pages.
 
@@ -108,16 +118,13 @@ export const SWR_KEYS = {
   tasks: '/tasks',
   users: '/users',
   features: '/users/_features',
+  apiKeys: '/api-keys',
 } as const;
 
 // ============ API 配置 ============
 
 // Client always calls /api (relative) — Next.js rewrites proxy to the backend server
 const API_BASE = '/api';
-// TODO: NEXT_PUBLIC_API_KEY is inlined into the client bundle, making it extractable.
-// For production, route API calls through Next.js server-side API routes that inject
-// the key server-side, and remove the NEXT_PUBLIC_ prefix.
-const API_KEY = process.env.NEXT_PUBLIC_API_KEY || '';
 const FETCH_TIMEOUT_MS = 15_000;
 
 // ============ 请求封装 ============
@@ -132,11 +139,6 @@ export async function fetchAPI<T>(path: string, options?: RequestInit): Promise<
     headers['Content-Type'] = 'application/json';
   }
 
-  // 添加 API Key 认证
-  if (API_KEY) {
-    headers['X-API-Key'] = API_KEY;
-  }
-
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
 
@@ -144,8 +146,15 @@ export async function fetchAPI<T>(path: string, options?: RequestInit): Promise<
     const res = await fetch(`${API_BASE}${path}`, {
       ...options,
       headers,
+      credentials: 'include',
       signal: controller.signal,
     });
+
+    // Handle session expiry — redirect to login
+    if (res.status === 401) {
+      window.location.reload();
+      throw new Error('Session expired');
+    }
 
     if (!res.ok) {
       const errorData: ApiError = await res.json().catch(() => ({ error: res.statusText }));
@@ -251,6 +260,20 @@ export const api = {
     fetchAPI<{ success: boolean }>(`/users/${userId}`, { method: 'DELETE' }),
 
   getFeatures: () => fetchAPI<{ features: Feature[] }>('/users/_features').then(r => r.features),
+
+  // API Keys
+  getApiKeys: () => fetchAPI<AgentApiKey[]>('/api-keys'),
+
+  createApiKey: (name: string) =>
+    fetchAPI<AgentApiKey & { key: string }>('/api-keys', {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    }),
+
+  revokeApiKey: (id: number) =>
+    fetchAPI<{ success: boolean; revoked: AgentApiKey }>(`/api-keys/${id}`, {
+      method: 'DELETE',
+    }),
 };
 
 export default api;

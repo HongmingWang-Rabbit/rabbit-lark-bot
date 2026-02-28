@@ -8,11 +8,10 @@ const feishu = require('../feishu/client');
 const { safeErrorMessage } = require('../utils/safeError');
 
 // Resolve a stable actor identifier for audit logs from web/API requests.
-// TODO: Once server-side auth is implemented, derive the actor from the
-// authenticated session instead of trusting client-provided values.
-// Currently any authenticated API client can impersonate another user in audit logs.
+// Prefers the authenticated session user (req.user.sub from JWT) over
+// client-provided values, preventing audit log impersonation.
 function resolveActor(req) {
-  return req.body?.userId || req.query?.userId || 'web_admin';
+  return req.user?.sub || req.body?.userId || req.query?.userId || 'web_admin';
 }
 
 // ============ Dashboard ============

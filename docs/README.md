@@ -19,7 +19,9 @@
 ### For Developers
 - [Architecture Overview](architecture.md#系统架构) - System structure
 - [Database Schema](architecture.md#数据库-schema) - Table definitions
-- [Security](architecture.md#安全) - Auth and rate limiting
+- [Security](architecture.md#安全) - Auth, OAuth, JWT sessions, API keys, and rate limiting
+- [Auth Endpoints](api.md#认证端点) - Feishu OAuth + password login
+- [API Key Management](api.md#api-key-管理) - Per-agent DB-backed API keys
 
 ### For Operators
 - [~~OpenClaw Setup~~](setup-openclaw.md) - Deprecated (replaced by direct Anthropic API)

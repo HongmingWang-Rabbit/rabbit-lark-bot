@@ -15,7 +15,25 @@ jest.mock('../src/db', () => ({
   },
 }));
 
-const { verifyFeishuSignature, apiAuth, feishuWebhookAuth } = require('../src/middleware/auth');
+// Mock jwt module
+jest.mock('../src/utils/jwt', () => ({
+  verifyJwt: jest.fn().mockReturnValue(null),
+  JWT_COOKIE_NAME: 'rlk_session',
+  COOKIE_OPTIONS: {},
+}));
+
+// Mock apiKeys DB
+jest.mock('../src/db/apiKeys', () => ({
+  findByHash: jest.fn().mockResolvedValue(null),
+  touchLastUsed: jest.fn().mockResolvedValue(undefined),
+}));
+
+const { verifyFeishuSignature, sessionAuth, agentAuth, feishuWebhookAuth } = require('../src/middleware/auth');
+const { verifyJwt } = require('../src/utils/jwt');
+const apiKeys = require('../src/db/apiKeys');
+
+// Legacy alias
+const apiAuth = sessionAuth;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -23,6 +41,7 @@ function mockReqRes(overrides = {}) {
   const req = {
     headers: {},
     body: {},
+    cookies: {},
     path: '/test',
     ip: '127.0.0.1',
     ...overrides,
@@ -86,16 +105,18 @@ describe('verifyFeishuSignature', () => {
   });
 });
 
-// ── apiAuth ──────────────────────────────────────────────────────────────────
+// ── sessionAuth (apiAuth) ────────────────────────────────────────────────────
 
-describe('apiAuth', () => {
+describe('sessionAuth', () => {
   const OLD_ENV = process.env;
 
   beforeEach(() => {
     process.env = { ...OLD_ENV };
     delete process.env.API_KEY;
+    delete process.env.JWT_SECRET;
     delete process.env.NODE_ENV;
     delete process.env.REQUIRE_AUTH;
+    verifyJwt.mockReturnValue(null);
   });
   afterAll(() => {
     process.env = OLD_ENV;
@@ -112,14 +133,15 @@ describe('apiAuth', () => {
   it('does not skip auth in development mode when REQUIRE_AUTH is set', async () => {
     process.env.NODE_ENV = 'development';
     process.env.REQUIRE_AUTH = 'true';
+    process.env.API_KEY = 'my-key';
     const { req, res, next } = mockReqRes();
-    // No API_KEY set, no credentials provided — falls through to production guard
+    // No credentials provided
     await apiAuth(req, res, next);
-    // Without API_KEY and not production, it warns and allows
-    expect(next).toHaveBeenCalled();
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(401);
   });
 
-  it('rejects all requests in production when API_KEY is not set', async () => {
+  it('rejects all requests in production when neither JWT_SECRET nor API_KEY is set', async () => {
     process.env.NODE_ENV = 'production';
     const { req, res, next } = mockReqRes();
     await apiAuth(req, res, next);
@@ -128,28 +150,44 @@ describe('apiAuth', () => {
     expect(res.json).toHaveBeenCalledWith({ error: 'Server misconfigured' });
   });
 
-  it('allows unprotected access when API_KEY is not set in development mode', async () => {
+  it('allows unprotected access when no auth configured in development mode', async () => {
     process.env.NODE_ENV = 'development';
     const { req, res, next } = mockReqRes();
     await apiAuth(req, res, next);
     expect(next).toHaveBeenCalled();
   });
 
-  it('rejects requests when API_KEY is not set and NODE_ENV is not development', async () => {
-    // NODE_ENV defaults to 'test' in Jest — should be rejected
-    const { req, res, next } = mockReqRes();
+  it('allows valid JWT cookie', async () => {
+    process.env.JWT_SECRET = 'test-secret';
+    verifyJwt.mockReturnValue({ sub: 'user1', name: 'Test', role: 'admin' });
+    const { req, res, next } = mockReqRes({
+      cookies: { rlk_session: 'valid-token' },
+    });
     await apiAuth(req, res, next);
-    expect(next).not.toHaveBeenCalled();
-    expect(res.status).toHaveBeenCalledWith(500);
+    expect(next).toHaveBeenCalled();
+    expect(req.user).toEqual({ sub: 'user1', name: 'Test', role: 'admin' });
   });
 
-  it('allows valid x-api-key header', async () => {
+  it('falls through from invalid JWT to API key check and sets req.user', async () => {
+    process.env.API_KEY = 'my-secret-key';
+    verifyJwt.mockReturnValue(null);
+    const { req, res, next } = mockReqRes({
+      cookies: { rlk_session: 'expired-token' },
+      headers: { 'x-api-key': 'my-secret-key' },
+    });
+    await apiAuth(req, res, next);
+    expect(next).toHaveBeenCalled();
+    expect(req.user).toEqual({ sub: 'api_key_user', name: 'API Key', role: 'superadmin' });
+  });
+
+  it('allows valid x-api-key header and sets req.user', async () => {
     process.env.API_KEY = 'my-secret-key';
     const { req, res, next } = mockReqRes({
       headers: { 'x-api-key': 'my-secret-key' },
     });
     await apiAuth(req, res, next);
     expect(next).toHaveBeenCalled();
+    expect(req.user).toEqual({ sub: 'api_key_user', name: 'API Key', role: 'superadmin' });
   });
 
   it('rejects invalid x-api-key header', async () => {
@@ -172,29 +210,20 @@ describe('apiAuth', () => {
     expect(res.status).toHaveBeenCalledWith(401);
   });
 
-  it('allows valid Bearer token', async () => {
+  it('allows valid Bearer token and sets req.user', async () => {
     process.env.API_KEY = 'my-secret-key';
     const { req, res, next } = mockReqRes({
       headers: { authorization: 'Bearer my-secret-key' },
     });
     await apiAuth(req, res, next);
     expect(next).toHaveBeenCalled();
+    expect(req.user).toEqual({ sub: 'api_key_user', name: 'API Key', role: 'superadmin' });
   });
 
   it('rejects invalid Bearer token', async () => {
     process.env.API_KEY = 'my-secret-key';
     const { req, res, next } = mockReqRes({
       headers: { authorization: 'Bearer wrong-key-wrong' },
-    });
-    await apiAuth(req, res, next);
-    expect(next).not.toHaveBeenCalled();
-    expect(res.status).toHaveBeenCalledWith(401);
-  });
-
-  it('rejects Bearer token with different length', async () => {
-    process.env.API_KEY = 'my-secret-key';
-    const { req, res, next } = mockReqRes({
-      headers: { authorization: 'Bearer x' },
     });
     await apiAuth(req, res, next);
     expect(next).not.toHaveBeenCalled();
@@ -208,6 +237,71 @@ describe('apiAuth', () => {
     expect(next).not.toHaveBeenCalled();
     expect(res.status).toHaveBeenCalledWith(401);
     expect(res.json).toHaveBeenCalledWith({ error: 'Unauthorized' });
+  });
+});
+
+// ── agentAuth ────────────────────────────────────────────────────────────────
+
+describe('agentAuth', () => {
+  const OLD_ENV = process.env;
+
+  beforeEach(() => {
+    process.env = { ...OLD_ENV };
+    delete process.env.AGENT_API_KEY;
+    delete process.env.API_KEY;
+    apiKeys.findByHash.mockResolvedValue(null);
+  });
+  afterAll(() => {
+    process.env = OLD_ENV;
+  });
+
+  it('allows valid AGENT_API_KEY', async () => {
+    process.env.AGENT_API_KEY = 'agent-secret';
+    const { req, res, next } = mockReqRes({
+      headers: { authorization: 'Bearer agent-secret' },
+    });
+    await agentAuth(req, res, next);
+    expect(next).toHaveBeenCalled();
+  });
+
+  it('rejects invalid AGENT_API_KEY', async () => {
+    process.env.AGENT_API_KEY = 'agent-secret';
+    const { req, res, next } = mockReqRes({
+      headers: { authorization: 'Bearer wrong-key' },
+    });
+    await agentAuth(req, res, next);
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(401);
+  });
+
+  it('allows DB-backed API key when env var check fails', async () => {
+    process.env.AGENT_API_KEY = 'env-key';
+    const dbKey = { id: 1, name: 'test-key' };
+    const rawKey = 'rlk_abcd1234abcd1234abcd1234abcd1234';
+    const keyHash = crypto.createHash('sha256').update(rawKey).digest('hex');
+    apiKeys.findByHash.mockResolvedValue(dbKey);
+
+    const { req, res, next } = mockReqRes({
+      headers: { authorization: `Bearer ${rawKey}` },
+    });
+    await agentAuth(req, res, next);
+    expect(next).toHaveBeenCalled();
+    expect(req.agentKeyName).toBe('test-key');
+    expect(apiKeys.touchLastUsed).toHaveBeenCalledWith(1);
+  });
+
+  it('allows unprotected access when no keys configured', async () => {
+    const { req, res, next } = mockReqRes();
+    await agentAuth(req, res, next);
+    expect(next).toHaveBeenCalled();
+  });
+
+  it('rejects when keys configured but no credentials provided', async () => {
+    process.env.AGENT_API_KEY = 'agent-secret';
+    const { req, res, next } = mockReqRes();
+    await agentAuth(req, res, next);
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(401);
   });
 });
 

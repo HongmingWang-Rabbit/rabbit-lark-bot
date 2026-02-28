@@ -5,10 +5,12 @@ import { usePathname } from 'next/navigation';
 import { useAuth } from '@/lib/auth';
 
 export default function NavBar() {
-  const { authed, logout } = useAuth();
+  const { authed, user, logout } = useAuth();
   const pathname = usePathname();
 
   if (!authed) return null;
+
+  const isAdmin = user?.role === 'admin' || user?.role === 'superadmin';
 
   return (
     <nav className="bg-white shadow-sm border-b">
@@ -22,12 +24,29 @@ export default function NavBar() {
             <NavLink href="/users" active={pathname.startsWith('/users')}>用户管理</NavLink>
             <NavLink href="/tasks" active={pathname.startsWith('/tasks')}>任务</NavLink>
             <NavLink href="/settings" active={pathname.startsWith('/settings')}>设置</NavLink>
-            <button
-              onClick={logout}
-              className="text-sm text-gray-400 hover:text-gray-600 transition-colors"
-            >
-              退出
-            </button>
+            {isAdmin && (
+              <NavLink href="/api-keys" active={pathname.startsWith('/api-keys')}>API Keys</NavLink>
+            )}
+            <div className="flex items-center gap-3">
+              {user && (
+                <div className="flex items-center gap-2">
+                  {user.avatarUrl && (
+                    <img
+                      src={user.avatarUrl}
+                      alt={user.name || 'Avatar'}
+                      className="w-6 h-6 rounded-full"
+                    />
+                  )}
+                  <span className="text-sm text-gray-600">{user.name || user.userId}</span>
+                </div>
+              )}
+              <button
+                onClick={logout}
+                className="text-sm text-gray-400 hover:text-gray-600 transition-colors"
+              >
+                退出
+              </button>
+            </div>
           </div>
         </div>
       </div>

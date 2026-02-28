@@ -257,6 +257,18 @@ const users = {
   },
 
   /**
+   * Update avatar URL for a user.
+   * @param {string} userId
+   * @param {string} avatarUrl
+   */
+  async updateAvatar(userId, avatarUrl) {
+    await pool.query(
+      'UPDATE users SET avatar_url = $1 WHERE user_id = $2',
+      [avatarUrl, userId]
+    );
+  },
+
+  /**
    * Check if a user exists and has admin or superadmin role.
    * NOTE: This checks users.role (feature permissions). For API access control,
    * see admins.isAdmin() in db/index.js which checks the separate admins table.

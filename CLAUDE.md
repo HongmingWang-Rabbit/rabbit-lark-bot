@@ -16,7 +16,7 @@ packages/
   scripts/  → Utility scripts
 db/
   init.sql       → Full schema
-  migrations/    → Incremental SQL (001-008)
+  migrations/    → Incremental SQL (001-009)
 ```
 
 ## Commands
@@ -71,12 +71,16 @@ Feishu → POST /webhook/event → decrypt AES-256-CBC → dedup → auto-regist
 ```
 
 ### Key Server Modules
-- `src/routes/` — Express routes: `webhook.js`, `api.js`, `agent.js`, `users.js`
+- `src/routes/` — Express routes: `webhook.js`, `api.js`, `agent.js`, `users.js`, `auth.js`, `apiKeys.js`
 - `src/services/reminder.js` — Task CRUD, reminder scheduling, `sendPendingReminders()` runs every 15 min via `setInterval`
 - `src/services/cuibanHandler.js` — Chat-based task commands (view/complete/create) + multi-step session selection
 - `src/services/agentForwarder.js` — Direct Anthropic API integration: lazy singleton client, builds system prompt (user context + registered users + date), runs agentic loop (max 5 rounds, max 10 concurrent via semaphore), executes `list_tasks`/`create_task`/`complete_task` tools, persists conversation history in `conversation_history` table (atomic CTE pruning), replies via `feishu.sendMessage()`; requires `ANTHROPIC_API_KEY`
 - `src/feishu/client.js` — Feishu REST API wrapper (messaging, user info, bitable); token cache with promise coalescing + retry-on-401
-- `src/middleware/auth.js` — `feishuWebhookAuth` (raw-body signature + encrypted payload) and `apiAuth` (API key via SHA-256 hash + timingSafeEqual)
+- `src/middleware/auth.js` — `feishuWebhookAuth` (raw-body signature + encrypted payload), `sessionAuth` (JWT cookie → legacy API key fallback, sets `req.user` on all paths), `agentAuth` (env var + DB-backed API keys)
+- `src/routes/auth.js` — Feishu OAuth SSO, server-side password login, JWT session management (`/api/auth/*`)
+- `src/routes/apiKeys.js` — Per-agent API key CRUD (`/api/api-keys`)
+- `src/utils/jwt.js` — JWT sign/verify helpers, cookie config
+- `src/db/apiKeys.js` — Agent API key DB operations (create, findByHash, list, revoke, touchLastUsed)
 - `src/middleware/rateLimit.js` — In-memory fixed-window rate limiter (10k entry cap, batch ~10% eviction, single-instance only)
 - `src/utils/intentDetector.js` — Regex-based message classification
 - `src/utils/safeError.js` — Production-safe error messages (hides internals when NODE_ENV=production)
@@ -85,12 +89,12 @@ Feishu → POST /webhook/event → decrypt AES-256-CBC → dedup → auto-regist
 
 ### Web Key Patterns
 - `src/lib/api.ts` — API client with `SWR_KEYS` constants (use these in all `useSWR`/`mutate` calls for cache consistency)
-- `src/lib/auth.tsx` — Client-side password auth with login rate limiting (5 attempts, 1-min lockout); TODO: migrate to server-side sessions
+- `src/lib/auth.tsx` — Server-side session auth via JWT httpOnly cookie; Feishu OAuth SSO (primary) + password fallback; `useAuth()` returns `{ authed, user, loginWithPassword, logout, feishuOAuthUrl }`
 - `src/components/UserCombobox.tsx` — Searchable user dropdown with keyboard navigation (arrows/enter/escape), filters to users with openId only, ARIA combobox roles
 - `src/components/StatusStates.tsx` — Shared `LoadingState`/`ErrorState` components with ARIA roles; `ErrorState` accepts `onRetry` callback or `retryKey` for SWR
 
 ### Database
-PostgreSQL 16. Key tables: `users` (with roles + feature overrides), `tasks` (assignee, deadline, reminder scheduling), `user_sessions` (multi-step dialog state, 5-min TTL). Uses raw SQL with `pg` library, no ORM.
+PostgreSQL 16. Key tables: `users` (with roles + feature overrides + avatar_url), `tasks` (assignee, deadline, reminder scheduling), `user_sessions` (multi-step dialog state, 5-min TTL), `agent_api_keys` (DB-backed agent API keys with SHA-256 hashes). Uses raw SQL with `pg` library, no ORM.
 
 ### User ID Types
 - `user_id` — canonical (email or Feishu user_id)
@@ -108,7 +112,7 @@ Three roles: `superadmin > admin > user`. Features resolved per-user: user overr
 - **Database**: Raw SQL, incremental migration files in `db/migrations/`
 - **Environment**: Single `.env` file at repo root, loaded via `dotenv` with path `../../../.env` from server
 - **Tests**: Jest + supertest (server), Jest + React Testing Library (web)
-- **Auth**: `API_KEY` env var required in production; in `NODE_ENV=development` auth is skipped; all other environments require API_KEY
+- **Auth**: Web admin uses JWT session cookies (Feishu OAuth SSO primary, password fallback with server-side rate limiting 5/IP/min); `JWT_SECRET` required in production; JWT verify uses `algorithms: ['HS256']` whitelist; agent endpoints support both env var (`AGENT_API_KEY`) and DB-backed API keys; legacy `API_KEY` header still works as fallback; `/api/api-keys` requires admin/superadmin role (403); in `NODE_ENV=development` auth is skipped
 - **Error handling**: Use `safeErrorMessage(err)` in route handlers; raw `err.message` only in debug logs; never include user IDs in error messages
 - **Settings whitelist**: `PUT /settings/:key` only accepts keys in the `VALID_SETTING_KEYS` array — add new keys there when adding settings
 - **Body size**: Express body parser limited to 1mb; raw body preserved via `verify` callback for webhook signature verification

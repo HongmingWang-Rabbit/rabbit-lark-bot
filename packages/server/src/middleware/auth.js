@@ -1,5 +1,10 @@
 const crypto = require('crypto');
 const logger = require('../utils/logger');
+const { verifyJwt, JWT_COOKIE_NAME } = require('../utils/jwt');
+const apiKeys = require('../db/apiKeys');
+
+// Synthetic user for legacy API key auth (env var API_KEY)
+const LEGACY_API_KEY_USER = Object.freeze({ sub: 'api_key_user', name: 'API Key', role: 'superadmin' });
 
 /**
  * 验证飞书 webhook 签名
@@ -56,77 +61,79 @@ function feishuWebhookAuth(req, res, next) {
 }
 
 /**
- * API 身份验证中间件
- * 支持 Bearer token 或 API key
+ * Session-based auth middleware for web /api/* routes.
+ * Priority: dev bypass → JWT cookie → legacy API key (X-API-Key / Bearer)
  */
-async function apiAuth(req, res, next) {
+async function sessionAuth(req, res, next) {
   try {
-    const authHeader = req.headers.authorization;
-    const apiKey = req.headers['x-api-key'];
-
-    // 开发环境可以跳过认证
+    // Dev mode bypass
     if (process.env.NODE_ENV === 'development' && !process.env.REQUIRE_AUTH) {
       return next();
     }
 
+    // 1. JWT cookie (primary)
+    const token = req.cookies?.[JWT_COOKIE_NAME];
+    if (token) {
+      const payload = verifyJwt(token);
+      if (payload) {
+        req.user = payload;
+        return next();
+      }
+      // Token expired/invalid — fall through to API key check
+    }
+
+    // 2. Legacy API key support (X-API-Key or Bearer token matched against API_KEY env var)
+    const authHeader = req.headers.authorization;
+    const apiKeyHeader = req.headers['x-api-key'];
     const expectedKey = process.env.API_KEY;
 
-    // Guard: refuse all requests if API_KEY is not configured (except explicit dev mode)
-    if (!expectedKey) {
+    if (expectedKey && (apiKeyHeader || authHeader)) {
+      const expectedHash = crypto.createHash('sha256').update(expectedKey).digest();
+
+      if (apiKeyHeader) {
+        const keyHash = crypto.createHash('sha256').update(apiKeyHeader).digest();
+        if (crypto.timingSafeEqual(keyHash, expectedHash)) {
+          req.user = LEGACY_API_KEY_USER;
+          return next();
+        }
+      }
+
+      if (authHeader?.startsWith('Bearer ')) {
+        const bearerToken = authHeader.slice(7);
+        const tokenHash = crypto.createHash('sha256').update(bearerToken).digest();
+        if (crypto.timingSafeEqual(tokenHash, expectedHash)) {
+          req.user = LEGACY_API_KEY_USER;
+          return next();
+        }
+      }
+    }
+
+    // 3. No valid auth
+    if (!expectedKey && !process.env.JWT_SECRET) {
       if (process.env.NODE_ENV === 'production') {
-        logger.error('API_KEY not set in production — rejecting request');
+        logger.error('Neither JWT_SECRET nor API_KEY set in production');
         return res.status(500).json({ error: 'Server misconfigured' });
       }
-      // Only allow unauthenticated access in development mode
-      if (process.env.NODE_ENV !== 'development') {
-        logger.warn('API_KEY not set and NODE_ENV is not development — rejecting request');
-        return res.status(500).json({ error: 'Server misconfigured' });
-      }
-      logger.warn('API_KEY not set, API is unprotected (dev mode)');
+      // Non-production without any auth config — allow through
+      logger.warn('No auth configured, API is unprotected');
       return next();
-    }
-
-    // Hash both values before comparison to prevent length-based timing side-channel
-    const expectedHash = crypto.createHash('sha256').update(expectedKey).digest();
-
-    // 检查 API Key (constant-time comparison via hash)
-    if (apiKey) {
-      const apiKeyHash = crypto.createHash('sha256').update(apiKey).digest();
-      if (crypto.timingSafeEqual(apiKeyHash, expectedHash)) {
-        return next();
-      }
-    }
-
-    // 检查 Bearer token (预留给未来 JWT 实现)
-    if (authHeader?.startsWith('Bearer ')) {
-      const token = authHeader.slice(7);
-      const tokenHash = crypto.createHash('sha256').update(token).digest();
-      if (crypto.timingSafeEqual(tokenHash, expectedHash)) {
-        return next();
-      }
     }
 
     logger.warn('Unauthorized API access attempt', { path: req.path, ip: req.ip });
     res.status(401).json({ error: 'Unauthorized' });
   } catch (err) {
-    logger.error('Auth middleware error', { error: err.message });
+    logger.error('Session auth middleware error', { error: err.message });
     res.status(500).json({ error: 'Authentication error' });
   }
 }
 
 /**
  * Agent callback authentication middleware
- * Validates requests from OpenClaw agent using AGENT_API_KEY.
+ * Validates requests from agents using AGENT_API_KEY env var or DB-backed API keys.
  * Falls back to API_KEY if AGENT_API_KEY is not separately configured.
  */
 async function agentAuth(req, res, next) {
   try {
-    const expectedKey = process.env.AGENT_API_KEY || process.env.API_KEY;
-    if (!expectedKey) {
-      logger.warn('AGENT_API_KEY not set, agent endpoint unprotected');
-      return next();
-    }
-
     const authHeader = req.headers.authorization;
     const apiKeyHeader = req.headers['x-api-key'];
 
@@ -134,15 +141,42 @@ async function agentAuth(req, res, next) {
       || authHeader?.replace(/^Bearer\s+/i, '');
 
     if (!token) {
+      // Check if any auth is configured at all
+      const expectedKey = process.env.AGENT_API_KEY || process.env.API_KEY;
+      if (!expectedKey) {
+        logger.warn('AGENT_API_KEY not set, agent endpoint unprotected');
+        return next();
+      }
       logger.warn('Agent auth: missing credentials', { path: req.path });
       return res.status(401).json({ error: 'Unauthorized' });
     }
 
-    const expectedHash = crypto.createHash('sha256').update(expectedKey).digest();
-    const tokenHash = crypto.createHash('sha256').update(token).digest();
+    // 1. Check env var key (AGENT_API_KEY or API_KEY)
+    const expectedKey = process.env.AGENT_API_KEY || process.env.API_KEY;
+    if (expectedKey) {
+      const expectedHash = crypto.createHash('sha256').update(expectedKey).digest();
+      const tokenHash = crypto.createHash('sha256').update(token).digest();
 
-    if (expectedHash.length === tokenHash.length && crypto.timingSafeEqual(tokenHash, expectedHash)) {
-      return next();
+      if (expectedHash.length === tokenHash.length && crypto.timingSafeEqual(tokenHash, expectedHash)) {
+        return next();
+      }
+    }
+
+    // 2. Check DB-backed API keys
+    try {
+      const keyHash = crypto.createHash('sha256').update(token).digest('hex');
+      const dbKey = await apiKeys.findByHash(keyHash);
+      if (dbKey) {
+        // Fire-and-forget last_used update
+        apiKeys.touchLastUsed(dbKey.id).catch(err => {
+          logger.debug('touchLastUsed failed', { id: dbKey.id, error: err.message });
+        });
+        req.agentKeyName = dbKey.name;
+        return next();
+      }
+    } catch (err) {
+      // DB lookup failure should not block auth if env var check already ran
+      logger.warn('DB API key lookup failed', { error: err.message });
     }
 
     logger.warn('Agent auth: invalid credentials', { path: req.path, ip: req.ip });
@@ -156,6 +190,8 @@ async function agentAuth(req, res, next) {
 module.exports = {
   verifyFeishuSignature,
   feishuWebhookAuth,
-  apiAuth,
+  sessionAuth,
   agentAuth,
+  // Legacy export for backward compatibility
+  apiAuth: sessionAuth,
 };
