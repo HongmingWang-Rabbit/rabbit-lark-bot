@@ -30,14 +30,18 @@
 │         │      │              reminder.js（任务 CRUD）               │
 │         │      └──→ 飞书 DM（执行人 + 报告人）                       │
 │         │                                                            │
-│         └──→ 其他           →  agentForwarder → AI Agent            │
-│                                    └──→ POST AGENT_WEBHOOK_URL       │
+│         └──→ 其他           →  agentForwarder → Anthropic API        │
+│                                    ├── system prompt（用户/权限/注册用户列表/日期）│
+│                                    ├── tool calling: list_tasks /       │
+│                                    │   create_task / complete_task      │
+│                                    ├── conversation history (PostgreSQL) │
+│                                    └── feishu.sendMessage() 直接回复    │
 └──────────────────────────────────────────────────────────────────────┘
-         │                              │
-         ▼                              ▼
-    PostgreSQL                     AI Agent
-  (users/tasks/                (OpenClaw/其他)
-   sessions/logs)               POST /api/agent/send → 飞书回复
+         │
+         ▼
+    PostgreSQL
+  (users/tasks/sessions/
+   audit_logs/conversation_history)
 ```
 
 ## 包结构
@@ -54,7 +58,7 @@ src/
 │   └── users.js           # 用户管理 API
 ├── services/
 │   ├── reminder.js        # 催办任务：CRUD + 提醒 cron
-│   ├── agentForwarder.js  # 消息转发给 AI Agent
+│   ├── agentForwarder.js  # 直接调用 Anthropic API（tool calling + 对话历史）
 │   └── cuibanHandler.js   # 催办命令路由（view/complete/create）
 ├── db/
 │   ├── pool.js            # pg 连接池
@@ -148,6 +152,21 @@ CREATE TABLE user_sessions (
     created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 ```
+
+### conversation_history
+
+```sql
+CREATE TABLE conversation_history (
+    id          SERIAL PRIMARY KEY,
+    chat_id     TEXT NOT NULL,        -- 飞书 chat_id，多轮对话的 key
+    role        TEXT NOT NULL CHECK (role IN ('user','assistant')),
+    content     JSONB NOT NULL,       -- 字符串（普通消息）或块数组（tool 结果）
+    created_at  TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX idx_conv_history_chat ON conversation_history(chat_id, created_at DESC);
+```
+
+每个 chat_id 最多保留 20 条历史（旧的自动删除），用于给 Claude 提供多轮对话上下文。
 
 ### settings / audit_logs / admins
 
@@ -263,6 +282,52 @@ sendPendingReminders()
 
 ---
 
+## AI 对话处理（agentForwarder）
+
+非命令消息（`intent = unknown`）进入 `agentForwarder.forwardToOwnerAgent()`，直接调用 Anthropic API：
+
+```
+用户消息（自然语言）
+    │
+    ├── 加载 PostgreSQL 对话历史（最近 20 条）
+    │
+    ├── 构建 System Prompt
+    │       ├── 当前日期（今天/明天 YYYY-MM-DD）
+    │       ├── 当前用户（姓名 / open_id / 角色 / 已开通功能）
+    │       ├── 系统注册用户列表（供名字匹配/open_id 查找）
+    │       └── 工具使用规则（名字模糊匹配 → 先确认）
+    │
+    ├── 调用 Anthropic API（claude-haiku-4-5，max_tokens=1024）
+    │       └── tools: list_tasks / create_task / complete_task
+    │
+    └── Agentic Loop（最多 5 轮）
+            │
+            ├── stop_reason = end_turn  → 发送文本回复 → 存历史 → 结束
+            │
+            └── stop_reason = tool_use → executeTool()
+                    ├── list_tasks      → reminderService.getUserPendingTasks()
+                    ├── create_task     → reminderService.createTask() + 飞书 DM 通知
+                    └── complete_task   → 校验归属 → reminderService.completeTask()
+```
+
+### 工具说明
+
+| 工具 | 描述 | 必填参数 |
+|------|------|---------|
+| `list_tasks` | 获取用户待办任务列表 | `open_id` |
+| `create_task` | 创建催办任务（自动 DM 通知被催办人） | `title`, `target_open_id`, `deadline` |
+| `complete_task` | 标记任务完成（仅限本人任务） | `task_id` |
+
+### 环境变量
+
+| 变量 | 说明 |
+|------|------|
+| `ANTHROPIC_API_KEY` | Anthropic API Key（必填，缺失时 AI 功能禁用） |
+
+模型：`claude-haiku-4-5-20251001`（速度快，成本低）
+
+---
+
 ## 用户自动注册
 
 ```
@@ -301,7 +366,10 @@ services:
 - `POSTGRES_PASSWORD` 必须在 `.env` 中设置（`${VAR:?}` 语法，缺失时 compose 启动失败）
 - Server 容器通过 `extra_hosts: host.docker.internal` 访问宿主机上的 AI Agent
 - 服务间通过 `condition: service_healthy` 确保启动顺序
-- Server 环境变量：`DATABASE_URL`, `FEISHU_APP_ID`, `FEISHU_APP_SECRET`, `FEISHU_ENCRYPT_KEY`, `API_KEY`, `CORS_ORIGIN`, `AGENT_WEBHOOK_URL`, `AGENT_API_KEY`, `AGENT_TIMEOUT_MS`, `ENABLE_BUILTIN_BOT`, `API_BASE_URL`, `LOG_LEVEL`
+- Server 环境变量：`DATABASE_URL`, `FEISHU_APP_ID`, `FEISHU_APP_SECRET`, `FEISHU_ENCRYPT_KEY`, `API_KEY`, `CORS_ORIGIN`, `ANTHROPIC_API_KEY`, `AGENT_API_KEY`, `ENABLE_BUILTIN_BOT`, `API_BASE_URL`, `LOG_LEVEL`
+  - `ANTHROPIC_API_KEY` — 必填（缺失时 AI 功能禁用，仅关键字命令可用）
+  - `AGENT_API_KEY` — `/api/agent/*` 端点的认证 key（独立于 API_KEY）
+  - ~~`AGENT_WEBHOOK_URL`~~ — 已废弃，agentForwarder 不再转发消息到外部 agent
 - Web 构建参数：`NEXT_PUBLIC_ADMIN_PASSWORD`, `NEXT_PUBLIC_API_KEY`（通过 Docker build args 注入，因为 Next.js `NEXT_PUBLIC_*` 变量在构建时内联）
 
 ### 数据库迁移

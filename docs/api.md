@@ -354,22 +354,34 @@ API Key 比较使用 SHA-256 哈希 + `crypto.timingSafeEqual`，防止长度和
 
 ## AI Agent API
 
+所有 `/api/agent/*` 端点使用 `AGENT_API_KEY` 认证（与管理 API 的 `API_KEY` 分开）。
+
 ### GET /api/agent/status
 
 检查 Agent 配置状态。
 
+**Response：**
+```json
+{
+  "success": true,
+  "configured": true,
+  "model": "claude-haiku-4-5-20251001",
+  "maxHistoryMessages": 20,
+  "maxToolRounds": 5
+}
+```
+
 ### POST /api/agent/send
 
-AI Agent 回复用户。
+向飞书用户或群聊发送消息（外部集成 / MCP 用）。
 
 **Request Body：**
 ```json
 {
-  "chat_id": "oc_xxx",          // 必填（或 open_id）
-  "open_id": "ou_xxx",          // 必填（或 chat_id）
-  "content": "你好！",           // 回复内容
-  "message_id": "om_xxx",       // 可选，用于线程回复
-  "msg_type": "text"            // text（默认）
+  "chat_id": "oc_xxx",          // 必填
+  "content": "你好！",           // 必填
+  "msg_type": "text",            // text（默认）| interactive
+  "reply_to_message_id": "om_xxx" // 可选，线程回复
 }
 ```
 
@@ -377,9 +389,98 @@ AI Agent 回复用户。
 
 回复特定消息（线程内）。
 
+**Request Body：**
+```json
+{
+  "message_id": "om_xxx",
+  "content": "回复内容"
+}
+```
+
 ### POST /api/agent/react
 
 添加表情回应。
+
+**Request Body：**
+```json
+{
+  "message_id": "om_xxx",
+  "emoji": "THUMBSUP"
+}
+```
+
+### GET /api/agent/tasks
+
+获取用户待办催办任务列表（按 open_id）。
+
+**Query Params：**
+- `open_id` — 用户 open_id（必填）
+
+**Response：**
+```json
+{
+  "success": true,
+  "tasks": [
+    {
+      "id": 1,
+      "title": "提交报告",
+      "deadline": "2026-03-01T00:00:00.000Z",
+      "status": "pending"
+    }
+  ]
+}
+```
+
+### POST /api/agent/tasks
+
+创建催办任务（AI 驱动，创建后自动 DM 通知被催办人）。
+
+**Request Body：**
+```json
+{
+  "title": "提交季度报告",       // 必填
+  "target_open_id": "ou_xxx",  // 必填，被催办人的 open_id
+  "reporter_open_id": "ou_yyy", // 可选，完成时通知的报告人
+  "deadline": "2026-03-31",    // YYYY-MM-DD（可选）
+  "note": "备注"               // 可选
+}
+```
+
+**Response：**
+```json
+{
+  "success": true,
+  "task": { /* 完整任务对象 */ }
+}
+```
+
+**错误：**
+- `400` — 缺少 title 或 target_open_id
+- `400` — 找不到 target_open_id 对应的用户
+
+### POST /api/agent/tasks/:id/complete
+
+标记任务完成。
+
+**Request Body：**
+```json
+{
+  "proof": "https://example.com/proof.pdf",  // 可选
+  "user_open_id": "ou_xxx"                   // 可选，完成人 open_id（审计用）
+}
+```
+
+**Response：**
+```json
+{
+  "success": true,
+  "task": { /* 更新后的任务对象 */ }
+}
+```
+
+**错误：**
+- `400` — Invalid task ID
+- `404` — 任务不存在或已完成
 
 ---
 
@@ -404,24 +505,29 @@ AI Agent 回复用户。
 
 ## 飞书机器人命令参考
 
-### 任意用户
+### 关键字命令（直接处理，不经过 AI）
 
-| 消息 | 触发意图 | 响应 |
-|------|---------|------|
-| `hi` / `你好` / `帮助` | greeting | 返回动态功能菜单 |
-| `菜单` / `功能` | menu | 返回功能菜单 |
-| `我的任务` / `任务列表` | cuiban_view | 待办任务列表 |
-| `完成 [N/名称] [URL]` | cuiban_complete | 标记完成，可附证明 |
-| 数字（选择流程中） | — | 选择多任务之一 |
+| 消息 | 触发意图 | 响应 | 权限 |
+|------|---------|------|------|
+| `hi` / `你好` / `帮助` 等 | greeting | 动态功能菜单 | 全员 |
+| `菜单` / `功能` | menu | 功能菜单 | 全员 |
+| `我的任务` / `任务列表` | cuiban_view | 待办任务列表 | `cuiban_view` |
+| `完成 [N/名称] [URL]` | cuiban_complete | 标记完成，可附证明 | `cuiban_complete` |
+| 数字（任务选择流程中） | — | 选择多任务之一 | — |
+| `/add 任务名 邮箱/姓名 [日期]` | cuiban_create | 创建任务，通知执行人 | `cuiban_create` |
 
-### admin+
+### 自然语言（转发给 AI，Anthropic tool calling 处理）
 
-| 消息 | 触发意图 | 响应 |
-|------|---------|------|
-| `/add 任务名 邮箱/姓名 [日期]` | cuiban_create | 创建任务，通知执行人 |
+| 示例消息 | AI 行为 |
+|---------|---------|
+| `给王泓铭创建一个催办，今天把ST6数据给到我` | 匹配注册用户 → `create_task` |
+| `帮我查一下我的待办` | `list_tasks` → 返回列表 |
+| `把任务1完成了` | `list_tasks` → `complete_task`（验证归属） |
+| `王鸿铭的任务` | 模糊匹配 → 询问确认（王泓铭？）再执行 |
 
 ### 说明
 
-- 非命令消息转发给 AI Agent
 - 无任何功能权限的用户收到"请联系管理员开通权限"
-- `/add` 支持邮箱、feishu_user_id、姓名（模糊）三种查找方式
+- 自然语言命令由 Claude 解析，名字不完全匹配时先询问确认再操作
+- `/add` 命令支持邮箱、feishu_user_id、姓名（模糊）三种查找方式
+- 用户只能通过 AI 完成分配给自己的任务（`complete_task` 有归属校验）

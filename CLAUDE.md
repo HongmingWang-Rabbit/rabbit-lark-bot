@@ -64,14 +64,17 @@ Feishu → POST /webhook/event → decrypt AES-256-CBC → dedup → auto-regist
   → intentDetector classifies message:
     greeting/menu → static reply
     cuiban_*      → cuibanHandler → task reminder service (CRUD + scheduled reminders)
-    unknown       → agentForwarder → external AI webhook
+    unknown       → agentForwarder → Anthropic API (direct tool calling)
+                      ├── tools: list_tasks / create_task / complete_task
+                      ├── conversation history in PostgreSQL (20 msgs/chat)
+                      └── feishu.sendMessage() directly (no relay)
 ```
 
 ### Key Server Modules
 - `src/routes/` — Express routes: `webhook.js`, `api.js`, `agent.js`, `users.js`
 - `src/services/reminder.js` — Task CRUD, reminder scheduling, `sendPendingReminders()` runs every 15 min via `setInterval`
 - `src/services/cuibanHandler.js` — Chat-based task commands (view/complete/create) + multi-step session selection
-- `src/services/agentForwarder.js` — POSTs messages to `AGENT_WEBHOOK_URL` with HMAC signature + user context; URL auto-redacted in logs
+- `src/services/agentForwarder.js` — Direct Anthropic API integration: builds system prompt (user context + registered users + date), runs agentic loop (max 5 rounds), executes `list_tasks`/`create_task`/`complete_task` tools, persists conversation history in `conversation_history` table, replies via `feishu.sendMessage()`; requires `ANTHROPIC_API_KEY`
 - `src/feishu/client.js` — Feishu REST API wrapper (messaging, user info, bitable); token cache with promise coalescing + retry-on-401
 - `src/middleware/auth.js` — `feishuWebhookAuth` (raw-body signature + encrypted payload) and `apiAuth` (API key via SHA-256 hash + timingSafeEqual); `requireAdmin` is **deprecated** (forgeable headers)
 - `src/middleware/rateLimit.js` — In-memory fixed-window rate limiter (10k entry cap, single-instance only)
