@@ -73,8 +73,9 @@ async function getAllTasks(limit = 100) {
  * @param {string} [params.creatorId]        - Creator feishu_user_id (for audit)
  * @param {string} [params.reporterOpenId]        - Reporter open_id (ou_xxx), notified when task completes
  * @param {number} [params.reminderIntervalHours] - Hours between reminders (0 = disabled, default 24)
+ * @param {string} [params.priority]             - Task priority: 'p0', 'p1' (default), 'p2'
  */
-async function createTask({ title, assigneeId, assigneeOpenId, assigneeName, deadline, note, creatorId, reporterOpenId, reminderIntervalHours }) {
+async function createTask({ title, assigneeId, assigneeOpenId, assigneeName, deadline, note, creatorId, reporterOpenId, reminderIntervalHours, priority = 'p1' }) {
   let deadlineDate;
   if (deadline) {
     // Strict date validation: accept YYYY-MM-DD or ISO 8601
@@ -95,11 +96,13 @@ async function createTask({ title, assigneeId, assigneeOpenId, assigneeName, dea
     ? parseInt(reminderIntervalHours, 10)
     : DEFAULT_REMINDER_INTERVAL_HOURS;
 
+  const resolvedPriority = ['p0', 'p1', 'p2'].includes(priority) ? priority : 'p1';
+
   const result = await pool.query(
-    `INSERT INTO tasks (title, assignee_id, assignee_open_id, reporter_open_id, deadline, note, creator_id, reminder_interval_hours)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    `INSERT INTO tasks (title, assignee_id, assignee_open_id, reporter_open_id, deadline, note, creator_id, reminder_interval_hours, priority)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
      RETURNING *`,
-    [title, assigneeId, assigneeOpenId || null, reporterOpenId || null, deadlineDate, note || null, creatorId || null, intervalHours]
+    [title, assigneeId, assigneeOpenId || null, reporterOpenId || null, deadlineDate, note || null, creatorId || null, intervalHours, resolvedPriority]
   );
   const task = result.rows[0];
 
@@ -116,13 +119,17 @@ async function createTask({ title, assigneeId, assigneeOpenId, assigneeName, dea
       .catch(() => {});
   }
 
+  // Priority badge helper
+  const priorityBadgeMap = { p0: '🔴 [P0 紧急]', p1: '🟡 [P1 一般]', p2: '🟢 [P2 不紧急]' };
+  const priorityBadge = priorityBadgeMap[resolvedPriority] || '🟡 [P1 一般]';
+
   // Notify assignee via direct Feishu message
   if (assigneeOpenId) {
     const deadlineStr = deadlineDate.toLocaleDateString('zh-CN', { month: 'long', day: 'numeric' });
     const reminderNote = intervalHours > 0 ? `\n⏰ 每 ${intervalHours} 小时提醒一次` : '';
     const notifyMsg =
       `📋 你收到一个新的催办任务：\n\n` +
-      `「${title}」\n` +
+      `${priorityBadge} 「${title}」\n` +
       `📅 截止：${deadlineStr}${reminderNote}\n\n` +
       `发送「完成」标记任务已完成`;
 

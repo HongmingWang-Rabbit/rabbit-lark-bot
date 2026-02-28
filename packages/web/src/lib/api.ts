@@ -9,12 +9,30 @@ export interface Task {
   reporter_open_id: string | null;   // person notified on completion
   deadline: string | null;           // ISO date string
   status: 'pending' | 'completed';
+  priority: 'p0' | 'p1' | 'p2';
   reminder_interval_hours: number;
   last_reminded_at: string | null;
   proof: string | null;
   note: string | null;
   created_at: string;
   completed_at: string | null;
+}
+
+export interface ScheduledTask {
+  id: number;
+  name: string;
+  title: string;
+  target_open_id: string;
+  reporter_open_id: string | null;
+  schedule: string;
+  timezone: string;
+  deadline_days: number;
+  priority: 'p0' | 'p1' | 'p2';
+  note: string | null;
+  reminder_interval_hours: number;
+  enabled: boolean;
+  last_run_at: string | null;
+  created_at: string;
 }
 
 export interface CreateTaskParams {
@@ -24,6 +42,7 @@ export interface CreateTaskParams {
   deadline?: string;
   note?: string;
   reminderIntervalHours?: number;
+  priority?: 'p0' | 'p1' | 'p2';
 }
 
 export interface Admin {
@@ -119,6 +138,7 @@ export const SWR_KEYS = {
   users: '/users',
   features: '/users/_features',
   apiKeys: '/api-keys',
+  scheduledTasks: '/scheduled-tasks',
 } as const;
 
 // ============ API 配置 ============
@@ -274,6 +294,25 @@ export const api = {
     fetchAPI<{ success: boolean; revoked: AgentApiKey }>(`/api-keys/${id}`, {
       method: 'DELETE',
     }),
+
+  // Scheduled Tasks
+  getScheduledTasks: (): Promise<ScheduledTask[]> =>
+    fetchAPI<{ success: boolean; scheduledTasks: ScheduledTask[] }>('/scheduled-tasks').then(d => d.scheduledTasks),
+
+  createScheduledTask: (data: Partial<ScheduledTask> & { name: string; title: string; targetOpenId: string; schedule: string }): Promise<ScheduledTask> =>
+    fetchAPI<{ success: boolean; scheduledTask: ScheduledTask }>('/scheduled-tasks', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }).then(d => d.scheduledTask),
+
+  updateScheduledTask: (id: number, data: Partial<ScheduledTask> & { targetOpenId?: string }): Promise<ScheduledTask> =>
+    fetchAPI<{ success: boolean; scheduledTask: ScheduledTask }>(`/scheduled-tasks/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }).then(d => d.scheduledTask),
+
+  deleteScheduledTask: (id: number): Promise<void> =>
+    fetchAPI<{ success: boolean }>(`/scheduled-tasks/${id}`, { method: 'DELETE' }).then(() => undefined),
 };
 
 export default api;

@@ -123,6 +123,11 @@ const TOOLS = [
         deadline:         { type: 'string',  description: '截止日期 YYYY-MM-DD，从用户话语中提取，今天/明天等要转成具体日期' },
         note:             { type: 'string',  description: '备注说明，可选' },
         reminder_interval_hours: { type: 'number', description: '提醒间隔小时数，默认 24' },
+        priority: {
+          type: 'string',
+          enum: ['p0', 'p1', 'p2'],
+          description: 'P0=紧急（今天必须完成）, P1=一般（默认）, P2=不紧急',
+        },
       },
       required: ['title', 'target_open_id', 'deadline'],
     },
@@ -172,6 +177,7 @@ async function executeTool(name, input, { userOpenId, chatId }) {
       deadline: input.deadline || null,
       note: input.note || null,
       reminderIntervalHours: input.reminder_interval_hours || 24,
+      priority: input.priority || 'p1',
       creatorId: userOpenId,
       reporterOpenId: userOpenId,
     });
@@ -260,6 +266,7 @@ function buildSystemPrompt(userContext, registeredUsers, chatMeta = {}, now = ne
     '- **create_task**: 创建后系统自动 DM 通知被催办人，无需额外发消息',
     '- **complete_task**: 必须先调 list_tasks 获取 task_id，再调此工具',
     '- **target_open_id**: 只能使用注册用户里的 open_id，不能编造',
+    '- **priority**: P0=紧急（今天必须完成）, P1=一般（默认，无特别说明时使用）, P2=不紧急；根据用户描述自动判断',
     '- 名字不完全匹配（如「王鸿铭」vs「王泓铭」）时，先在回复中询问确认，再执行操作',
     '- 找不到用户时，告知对方让其先给机器人发一条消息完成注册',
     '- 没有对应权限时直接告知（cuiban_view=查任务 cuiban_complete=完成 cuiban_create=创建）',

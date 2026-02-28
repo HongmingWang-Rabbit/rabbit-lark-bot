@@ -6,6 +6,14 @@ import { api, SWR_KEYS, Task, User, CreateTaskParams } from '@/lib/api';
 import UserCombobox from '@/components/UserCombobox';
 import { LoadingState, ErrorState } from '@/components/StatusStates';
 
+// ── constants ────────────────────────────────────────────────────────────────
+
+const PRIORITY_BADGE: Record<string, { label: string; className: string }> = {
+  p0: { label: 'P0 紧急', className: 'bg-red-100 text-red-700' },
+  p1: { label: 'P1 一般', className: 'bg-yellow-100 text-yellow-700' },
+  p2: { label: 'P2 不紧急', className: 'bg-green-100 text-green-700' },
+};
+
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 /** Build open_id → display name map from the users list */
@@ -79,6 +87,7 @@ function TaskTable({ tasks, userMap }: { tasks: Task[]; userMap: Map<string, str
         <thead className="bg-gray-50">
           <tr>
             <th className="px-4 py-3 text-left text-sm font-medium text-gray-500">任务名称</th>
+            <th className="px-4 py-3 text-left text-sm font-medium text-gray-500">优先级</th>
             <th className="px-4 py-3 text-left text-sm font-medium text-gray-500">催办对象</th>
             <th className="px-4 py-3 text-left text-sm font-medium text-gray-500">报告对象</th>
             <th className="px-4 py-3 text-left text-sm font-medium text-gray-500">状态</th>
@@ -93,7 +102,7 @@ function TaskTable({ tasks, userMap }: { tasks: Task[]; userMap: Map<string, str
           ))}
           {tasks.length === 0 && (
             <tr>
-              <td colSpan={7} className="px-4 py-8 text-center text-gray-500">暂无任务</td>
+              <td colSpan={8} className="px-4 py-8 text-center text-gray-500">暂无任务</td>
             </tr>
           )}
         </tbody>
@@ -144,6 +153,16 @@ function TaskRow({ task, userMap }: { task: Task; userMap: Map<string, string> }
         <td className="px-4 py-3 font-medium">
           {task.title}
           {task.note && <p className="text-xs text-gray-400 mt-0.5">{task.note}</p>}
+        </td>
+        <td className="px-4 py-3">
+          {(() => {
+            const badge = PRIORITY_BADGE[task.priority] || PRIORITY_BADGE['p1'];
+            return (
+              <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${badge.className}`}>
+                {badge.label}
+              </span>
+            );
+          })()}
         </td>
         <td className="px-4 py-3 text-gray-600">{assigneeName}</td>
         <td className="px-4 py-3 text-gray-600">
@@ -217,7 +236,7 @@ function TaskRow({ task, userMap }: { task: Task; userMap: Map<string, string> }
       </tr>
       {error && (
         <tr>
-          <td colSpan={7} className="px-4 py-2">
+          <td colSpan={8} className="px-4 py-2">
             <div className="flex items-center gap-2 text-sm text-red-600 bg-red-50 rounded px-3 py-1.5">
               <span>{error}</span>
               <button onClick={() => setError(null)} className="text-red-400 hover:text-red-600 ml-auto">
@@ -259,6 +278,7 @@ function TaskForm({ onSuccess }: { onSuccess: () => void }) {
     deadline: string;
     note: string;
     reminderIntervalHours: number;
+    priority: 'p0' | 'p1' | 'p2';
   }>({
     title: '',
     targetOpenId: null,
@@ -266,6 +286,7 @@ function TaskForm({ onSuccess }: { onSuccess: () => void }) {
     deadline: '',
     note: '',
     reminderIntervalHours: 24,
+    priority: 'p1',
   });
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -281,6 +302,7 @@ function TaskForm({ onSuccess }: { onSuccess: () => void }) {
         deadline: form.deadline || undefined,
         note: form.note || undefined,
         reminderIntervalHours: form.reminderIntervalHours,
+        priority: form.priority,
       });
       onSuccess();
     } catch (err) {
@@ -350,6 +372,19 @@ function TaskForm({ onSuccess }: { onSuccess: () => void }) {
             className="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             placeholder="可选说明"
           />
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">紧急程度</label>
+          <select
+            value={form.priority}
+            onChange={e => setForm({ ...form, priority: e.target.value as 'p0' | 'p1' | 'p2' })}
+            className="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+          >
+            <option value="p0">🔴 P0 紧急（今天必须完成）</option>
+            <option value="p1">🟡 P1 一般（默认）</option>
+            <option value="p2">🟢 P2 不紧急</option>
+          </select>
         </div>
 
         <div>

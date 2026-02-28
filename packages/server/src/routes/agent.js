@@ -246,7 +246,7 @@ router.post('/tasks/:id/complete', async (req, res) => {
  */
 router.post('/tasks', async (req, res) => {
   try {
-    const { title, target_open_id, reporter_open_id, deadline, note } = req.body;
+    const { title, target_open_id, reporter_open_id, deadline, note, priority } = req.body;
     if (!title || !target_open_id) {
       return res.status(400).json({ error: 'title and target_open_id are required' });
     }
@@ -263,6 +263,7 @@ router.post('/tasks', async (req, res) => {
       assigneeName: targetUser.name || null,
       deadline: deadline || null,
       note: note || null,
+      priority: priority || 'p1',
       reporterOpenId: reporter_open_id || null,
     });
 

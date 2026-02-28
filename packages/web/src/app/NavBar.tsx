@@ -27,6 +27,7 @@ export default function NavBar() {
                 <NavLink href="/users" active={pathname.startsWith('/users')}>用户管理</NavLink>
                 <NavLink href="/settings" active={pathname.startsWith('/settings')}>设置</NavLink>
                 <NavLink href="/api-keys" active={pathname.startsWith('/api-keys')}>API Keys</NavLink>
+                <NavLink href="/scheduled-tasks" active={pathname.startsWith('/scheduled-tasks')}>定时任务</NavLink>
               </>
             )}
             <div className="flex items-center gap-3">

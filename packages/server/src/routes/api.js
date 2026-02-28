@@ -1,10 +1,13 @@
 const express = require('express');
 const router = express.Router();
+const cron = require('node-cron');
 const { admins, settings, audit } = require('../db');
 const pool = require('../db/pool');
 const usersDb = require('../db/users');
 const reminderService = require('../services/reminder');
 const feishu = require('../feishu/client');
+const scheduledTasksDb = require('../db/scheduledTasks');
+const { reload: reloadScheduler } = require('../services/scheduledTaskRunner');
 const { safeErrorMessage } = require('../utils/safeError');
 
 // Resolve a stable actor identifier for audit logs from web/API requests.
@@ -65,7 +68,7 @@ router.get('/tasks', async (req, res) => {
 // 创建任务（通过邮箱查找被催办人）
 router.post('/tasks', async (req, res) => {
   try {
-    const { title, targetOpenId, targetEmail, deadline, note, creatorId, reporterOpenId, reminderIntervalHours } = req.body;
+    const { title, targetOpenId, targetEmail, deadline, note, creatorId, reporterOpenId, reminderIntervalHours, priority } = req.body;
 
     if (!title || (!targetOpenId && !targetEmail)) {
       return res.status(400).json({ error: '任务名称和目标用户必填' });
@@ -99,6 +102,7 @@ router.post('/tasks', async (req, res) => {
       assigneeName: targetUser.name || null,
       deadline,
       note,
+      priority: priority || 'p1',
       creatorId: creatorId || resolveActor(req),
       reporterOpenId: resolvedReporterOpenId,
       reminderIntervalHours: reminderIntervalHours !== undefined
@@ -243,6 +247,84 @@ router.get('/audit', async (req, res) => {
       action
     });
     res.json(logs);
+  } catch (err) {
+    res.status(500).json({ error: safeErrorMessage(err) });
+  }
+});
+
+// ============ Scheduled Tasks ============
+
+// GET /api/scheduled-tasks
+router.get('/scheduled-tasks', async (req, res) => {
+  try {
+    const list = await scheduledTasksDb.list();
+    res.json({ success: true, scheduledTasks: list });
+  } catch (err) {
+    res.status(500).json({ error: safeErrorMessage(err) });
+  }
+});
+
+// POST /api/scheduled-tasks
+router.post('/scheduled-tasks', async (req, res) => {
+  try {
+    const { name, title, targetOpenId, reporterOpenId, schedule, timezone,
+            deadlineDays, priority, note, reminderIntervalHours } = req.body;
+    if (!name || !title || !targetOpenId || !schedule) {
+      return res.status(400).json({ error: 'name, title, targetOpenId, schedule are required' });
+    }
+    if (!cron.validate(schedule)) {
+      return res.status(400).json({ error: `Invalid cron expression: ${schedule}` });
+    }
+    const st = await scheduledTasksDb.create({
+      name, title, targetOpenId, reporterOpenId, schedule,
+      timezone: timezone || 'Asia/Shanghai',
+      deadlineDays: parseInt(deadlineDays) || 1,
+      priority: priority || 'p1',
+      note,
+      reminderIntervalHours: parseInt(reminderIntervalHours) || 24,
+      createdBy: resolveActor(req),
+    });
+    await reloadScheduler();
+    res.json({ success: true, scheduledTask: st });
+  } catch (err) {
+    res.status(500).json({ error: safeErrorMessage(err) });
+  }
+});
+
+// PATCH /api/scheduled-tasks/:id
+router.patch('/scheduled-tasks/:id', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ error: 'Invalid ID' });
+    const { name, title, targetOpenId, reporterOpenId, schedule, timezone,
+            deadlineDays, priority, note, reminderIntervalHours, enabled } = req.body;
+    if (schedule !== undefined && !cron.validate(schedule)) {
+      return res.status(400).json({ error: `Invalid cron expression: ${schedule}` });
+    }
+    const st = await scheduledTasksDb.update(id, {
+      name, title, targetOpenId, reporterOpenId, schedule, timezone,
+      deadlineDays: deadlineDays !== undefined ? parseInt(deadlineDays) : undefined,
+      priority, note,
+      reminderIntervalHours: reminderIntervalHours !== undefined ? parseInt(reminderIntervalHours) : undefined,
+      enabled,
+    });
+    if (!st) return res.status(404).json({ error: 'Not found' });
+    await reloadScheduler();
+    res.json({ success: true, scheduledTask: st });
+  } catch (err) {
+    res.status(500).json({ error: safeErrorMessage(err) });
+  }
+});
+
+// DELETE /api/scheduled-tasks/:id
+router.delete('/scheduled-tasks/:id', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ error: 'Invalid ID' });
+    const st = await scheduledTasksDb.remove(id);
+    if (!st) return res.status(404).json({ error: 'Not found' });
+    await reloadScheduler();
+    res.json({ success: true, scheduledTask: st });
   } catch (err) {
     res.status(500).json({ error: safeErrorMessage(err) });
   }

@@ -15,6 +15,7 @@ const userRoutes = require('./routes/users');
 const authRoutes = require('./routes/auth');
 const apiKeyRoutes = require('./routes/apiKeys');
 const { sendPendingReminders } = require('./services/reminder');
+const scheduledTaskRunner = require('./services/scheduledTaskRunner');
 const sessions = require('./db/sessions');
 
 // 验证环境变量
@@ -118,6 +119,11 @@ async function start() {
     runReminderCron();
     intervalIds.push(setInterval(runReminderCron, REMINDER_CHECK_MINUTES * 60 * 1000));
     logger.info(`⏰ Reminder cron started`, { checkIntervalMinutes: REMINDER_CHECK_MINUTES });
+
+    // ── 定时任务 Runner (node-cron based) ─────────────────────────────────────
+    scheduledTaskRunner.loadAll().catch(err =>
+      logger.error('Failed to load scheduled tasks', { error: err.message })
+    );
 
     // Session cleanup: prune expired rows every 30 minutes
     intervalIds.push(setInterval(() => sessions.cleanup().catch((err) => {
