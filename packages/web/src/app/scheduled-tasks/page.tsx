@@ -5,6 +5,7 @@ import useSWR, { mutate } from 'swr';
 import { api, SWR_KEYS, ScheduledTask, User } from '@/lib/api';
 import AdminGuard from '@/components/AdminGuard';
 import UserCombobox from '@/components/UserCombobox';
+import FeishuUserLookup from '@/components/FeishuUserLookup';
 
 // ── constants ────────────────────────────────────────────────────────────────
 
@@ -424,6 +425,12 @@ function ScheduledTaskForm({
             placeholder="搜索姓名或邮箱…"
             required
           />
+          <FeishuUserLookup
+            onSelect={(openId, name) => {
+              setForm(f => ({ ...f, targetOpenId: openId }));
+              mutate(SWR_KEYS.users); // refresh so UserCombobox shows the provisioned user
+            }}
+          />
         </div>
 
         {/* 报告人 */}
@@ -437,6 +444,12 @@ function ScheduledTaskForm({
             onChange={v => setForm({ ...form, reporterOpenId: v ?? '' })}
             users={users}
             placeholder="搜索姓名或邮箱…（可选）"
+          />
+          <FeishuUserLookup
+            onSelect={(openId) => {
+              setForm(f => ({ ...f, reporterOpenId: openId }));
+              mutate(SWR_KEYS.users);
+            }}
           />
         </div>
 

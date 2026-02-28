@@ -256,6 +256,45 @@ async function getUserByEmail(email) {
 }
 
 /**
+ * Look up a Feishu user by email or employee_id, returning normalised profile.
+ *
+ * Strategy:
+ *   - email      → batch_get_id  → resolveUserInfo(open_id, 'open_id')
+ *   - employee_id→ contact API with user_id_type=user_id
+ *
+ * @param {{ email?: string, employeeId?: string }} query
+ * @returns {Promise<{openId:string,name:string|null,email:string|null,unionId:string|null}|null>}
+ */
+async function lookupFeishuUser({ email, employeeId }) {
+  try {
+    if (email) {
+      // Step 1: get open_id from email
+      const batchRes = await request('/contact/v3/users/batch_get_id', {
+        method: 'POST',
+        body: JSON.stringify({ emails: [email.toLowerCase()] }),
+      });
+      const entry = batchRes.data?.user_list?.[0];
+      if (!entry?.open_id) return null;
+
+      // Step 2: get full profile
+      const info = await resolveUserInfo(entry.open_id, 'open_id');
+      return info;
+    }
+
+    if (employeeId) {
+      // employee_id maps to user_id in Feishu (org-assigned ID, e.g. "E00001")
+      const info = await resolveUserInfo(employeeId, 'user_id');
+      return info;
+    }
+
+    return null;
+  } catch (err) {
+    logger.debug('lookupFeishuUser failed', { email, employeeId, error: err.message });
+    return null;
+  }
+}
+
+/**
  * 获取用户详情
  * @param {string} userId
  */
@@ -410,6 +449,7 @@ module.exports = {
   getUserByEmail,
   getUserInfo,
   resolveUserInfo,
+  lookupFeishuUser,
   bitable,
   // 常量导出
   BASE_URL,

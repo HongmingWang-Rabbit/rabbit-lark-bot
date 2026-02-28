@@ -12,6 +12,7 @@
 const express = require('express');
 const router = express.Router();
 const users = require('../db/users');
+const feishu = require('../feishu/client');
 const { listFeatures, resolveFeatures, getFeature } = require('../features');
 const { audit } = require('../db');
 const logger = require('../utils/logger');
@@ -25,6 +26,67 @@ function resolveActor(req) {
 
 router.get('/_features', (_req, res) => {
   res.json({ success: true, features: listFeatures() });
+});
+
+// ── Lookup user by email or employee_id ────────────────────────────────────
+// Must be declared before /:userId to avoid route collision.
+
+router.get('/_lookup', async (req, res) => {
+  const { email, employee_id: employeeId } = req.query;
+  if (!email && !employeeId) {
+    return res.status(400).json({ error: 'Provide email or employee_id query param' });
+  }
+
+  try {
+    // 1. Check local DB first (fast path)
+    let localUser = null;
+    if (email) localUser = await users.findByEmail(email);
+    if (!localUser && employeeId) localUser = await users.findByFeishuUserId(employeeId);
+
+    if (localUser?.open_id) {
+      return res.json({
+        success: true,
+        source: 'local',
+        user: {
+          openId: localUser.open_id,
+          name: localUser.name,
+          email: localUser.email,
+          role: localUser.role,
+        },
+      });
+    }
+
+    // 2. Fall back to Feishu API
+    const feishuUser = await feishu.lookupFeishuUser({ email, employeeId });
+    if (!feishuUser?.openId) {
+      return res.json({ success: false, user: null, message: '未找到该用户' });
+    }
+
+    // 3. Auto-provision so they appear in the local user list going forward
+    await users.autoProvision({
+      openId: feishuUser.openId,
+      name: feishuUser.name,
+      email: feishuUser.email,
+      feishuUserId: feishuUser.unionId || feishuUser.feishuUserId,
+    }).catch(err => {
+      // Non-fatal — provision failure shouldn't block the lookup response
+      logger.warn('_lookup: autoProvision failed', { error: err.message });
+    });
+
+    return res.json({
+      success: true,
+      source: 'feishu',
+      user: {
+        openId: feishuUser.openId,
+        name: feishuUser.name,
+        email: feishuUser.email,
+        role: 'user',
+      },
+    });
+  } catch (err) {
+    logger.error('User lookup failed', { error: err.message });
+    res.status(500).json({ error: safeErrorMessage(err) });
+  }
 });
 
 // ── List all users ──────────────────────────────────────────────────────────
