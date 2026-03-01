@@ -288,12 +288,13 @@ const users = {
 
   /**
    * Find all users who have the given tag (case-insensitive).
+   * Uses the GIN index on `tags` via the @> (contains) operator.
    * @param {string} tag
    * @returns {Promise<object[]>}
    */
   async findByTag(tag) {
     const result = await pool.query(
-      `SELECT * FROM users WHERE $1 = ANY(tags) ORDER BY name`,
+      `SELECT * FROM users WHERE tags @> ARRAY[$1::text] ORDER BY name`,
       [tag.toLowerCase().trim()]
     );
     return result.rows;
@@ -324,7 +325,9 @@ const users = {
 
   /**
    * Pick the user in a tag group with the lowest pending-task workload.
-   * If multiple users are tied, picks randomly among the tied set.
+   * If multiple users are tied, picks randomly among the tied set using
+   * a pre-shuffle + stable sort (avoids Math.random() inside comparator,
+   * which is undefined behaviour in sort algorithms).
    * Returns null if no users found for the tag.
    * @param {string} tag
    * @returns {Promise<object|null>} user row or null
@@ -333,19 +336,22 @@ const users = {
     const tagUsers = await users.findByTag(tag);
     if (!tagUsers.length) return null;
 
-    const openIds = tagUsers.map(u => u.open_id).filter(Boolean);
+    const eligible = tagUsers.filter(u => u.open_id);
+    if (!eligible.length) return null;
+
+    const openIds = eligible.map(u => u.open_id);
     const workload = await users.getWorkload(openIds);
 
-    // Sort by workload ascending; randomly shuffle ties
-    const sorted = tagUsers
-      .filter(u => u.open_id)
-      .sort((a, b) => {
-        const diff = (workload[a.open_id] ?? 0) - (workload[b.open_id] ?? 0);
-        if (diff !== 0) return diff;
-        return Math.random() - 0.5; // random tie-break
-      });
+    // Fisher-Yates shuffle first so ties are broken randomly but consistently
+    for (let i = eligible.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [eligible[i], eligible[j]] = [eligible[j], eligible[i]];
+    }
 
-    return sorted[0] || null;
+    // Stable sort by workload ascending — ties already randomised by shuffle
+    eligible.sort((a, b) => (workload[a.open_id] ?? 0) - (workload[b.open_id] ?? 0));
+
+    return eligible[0];
   },
 
   /**

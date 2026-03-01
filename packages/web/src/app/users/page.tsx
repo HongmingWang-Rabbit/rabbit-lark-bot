@@ -409,8 +409,6 @@ function useFocusTrap(ref: RefObject<HTMLElement | null>, onClose: () => void) {
   }, [ref, onClose]);
 }
 
-// ── EditUserModal ─────────────────────────────────────────────────────────────
-
 // ── TagChipEditor ─────────────────────────────────────────────────────────────
 
 function TagChipEditor({ tags, onChange }: { tags: string[]; onChange: (t: string[]) => void }) {
@@ -451,6 +449,8 @@ function TagChipEditor({ tags, onChange }: { tags: string[]; onChange: (t: strin
     </div>
   );
 }
+
+// ── EditUserModal ─────────────────────────────────────────────────────────────
 
 // ── EditUserModal ─────────────────────────────────────────────────────────────
 

@@ -319,6 +319,21 @@ router.patch('/scheduled-tasks/:id', async (req, res) => {
     if (priority !== undefined && !VALID_PRIORITIES.includes(priority)) {
       return res.status(400).json({ error: `Invalid priority: ${priority}. Must be p0, p1, or p2` });
     }
+
+    // Guard: ensure the update won't leave the task without any assignee.
+    // Fetch current record to check what will remain after the partial update.
+    if (targetOpenId === null || targetTag === null) {
+      const current = await scheduledTasksDb.get(id);
+      if (!current) return res.status(404).json({ error: 'Not found' });
+      const finalOpenId = targetOpenId !== undefined ? targetOpenId : current.target_open_id;
+      const finalTag    = targetTag    !== undefined ? targetTag    : current.target_tag;
+      if (!finalOpenId && !finalTag) {
+        return res.status(400).json({
+          error: 'Scheduled task must have either targetOpenId or targetTag — cannot clear both',
+        });
+      }
+    }
+
     const st = await scheduledTasksDb.update(id, {
       name, title, targetOpenId, targetTag, reporterOpenId, schedule, timezone,
       deadlineDays: deadlineDays !== undefined ? Math.max(0, safeInt(deadlineDays, 1)) : undefined,

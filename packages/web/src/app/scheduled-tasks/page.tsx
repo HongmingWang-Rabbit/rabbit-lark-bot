@@ -23,7 +23,7 @@ const CRON_PRESETS = [
   { label: '自定义', value: 'custom' },
 ];
 
-const TIMEZONES = ['Asia/Shanghai', 'UTC', 'America/New_York'];
+const TIMEZONES = ['America/Toronto', 'Asia/Shanghai', 'UTC', 'America/New_York', 'America/Vancouver', 'America/Chicago', 'America/Los_Angeles'];
 
 // ── types ─────────────────────────────────────────────────────────────────────
 
@@ -372,20 +372,25 @@ function ScheduledTaskForm({
     };
   });
 
-  // Fetch workload preview when tag mode is active
+  // Fetch workload preview when tag mode is active — debounced 400ms to avoid
+  // firing on every keystroke while the user is still typing the tag name.
   const [workloadPreview, setWorkloadPreview] = useState<WorkloadUser[]>([]);
   const [workloadLoading, setWorkloadLoading] = useState(false);
   useEffect(() => {
     if (form.assignMode !== 'tag' || !form.targetTag.trim()) {
       setWorkloadPreview([]);
+      setWorkloadLoading(false);
       return;
     }
-    const tag = form.targetTag.trim();
     setWorkloadLoading(true);
-    api.getWorkload(tag)
-      .then(setWorkloadPreview)
-      .catch(() => setWorkloadPreview([]))
-      .finally(() => setWorkloadLoading(false));
+    const tag = form.targetTag.trim();
+    const timer = setTimeout(() => {
+      api.getWorkload(tag)
+        .then(setWorkloadPreview)
+        .catch(() => setWorkloadPreview([]))
+        .finally(() => setWorkloadLoading(false));
+    }, 400);
+    return () => clearTimeout(timer);
   }, [form.assignMode, form.targetTag]);
 
   const handlePresetChange = (value: string) => {
