@@ -41,25 +41,35 @@ describe('Reminder Service', () => {
   });
 
   describe('getAllTasks', () => {
-    it('should return tasks ordered by created_at DESC', async () => {
+    it('should return tasks ordered by created_at DESC with pagination', async () => {
       const mockTasks = [
         { id: 2, title: 'Task B', status: 'pending' },
         { id: 1, title: 'Task A', status: 'completed' },
       ];
-      mockQuery.mockResolvedValueOnce({ rows: mockTasks });
+      // getAllTasks uses Promise.all — mock both queries in order
+      mockQuery
+        .mockResolvedValueOnce({ rows: mockTasks })      // SELECT * rows
+        .mockResolvedValueOnce({ rows: [{ total: 2 }] }); // COUNT query
 
-      const tasks = await reminderService.getAllTasks();
-      expect(tasks).toEqual(mockTasks);
+      const result = await reminderService.getAllTasks({ page: 1, limit: 20 });
+      expect(result.rows).toEqual(mockTasks);
+      expect(result.total).toBe(2);
       expect(mockQuery).toHaveBeenCalledWith(
         expect.stringContaining('ORDER BY created_at DESC'),
-        [100]
+        expect.arrayContaining([20, 0])
       );
     });
 
     it('should respect custom limit', async () => {
-      mockQuery.mockResolvedValueOnce({ rows: [] });
-      await reminderService.getAllTasks(50);
-      expect(mockQuery).toHaveBeenCalledWith(expect.any(String), [50]);
+      mockQuery
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [{ total: 0 }] });
+      const result = await reminderService.getAllTasks({ limit: 50 });
+      expect(result.rows).toEqual([]);
+      expect(mockQuery).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.arrayContaining([50, 0])
+      );
     });
   });
 

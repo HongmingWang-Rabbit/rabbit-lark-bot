@@ -60,7 +60,7 @@ jest.mock('../src/utils/logger', () => ({
 
 // Mock reminder service (Postgres-backed, plain DB rows)
 jest.mock('../src/services/reminder', () => ({
-  getAllTasks: jest.fn().mockResolvedValue([]),
+  getAllTasks: jest.fn().mockResolvedValue({ rows: [], total: 0 }),
   getAllPendingTasks: jest.fn().mockResolvedValue([]),
   getUserPendingTasks: jest.fn().mockResolvedValue([]),
   createTask: jest.fn().mockResolvedValue({ id: 1, title: 'Test', status: 'pending' }),
@@ -119,11 +119,16 @@ describe('API Routes', () => {
   });
 
   describe('GET /api/tasks', () => {
-    it('should return task list', async () => {
+    it('should return paginated task list', async () => {
       const res = await request(app).get('/api/tasks');
 
       expect(res.status).toBe(200);
-      expect(Array.isArray(res.body)).toBe(true);
+      // Response shape changed to { tasks, total, page, limit }
+      expect(res.body).toHaveProperty('tasks');
+      expect(Array.isArray(res.body.tasks)).toBe(true);
+      expect(res.body).toHaveProperty('total');
+      expect(res.body).toHaveProperty('page', 1);
+      expect(res.body).toHaveProperty('limit', 20);
     });
   });
 

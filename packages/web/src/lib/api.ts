@@ -221,7 +221,22 @@ export const api = {
   getDashboard: () => fetchAPI<DashboardData>('/dashboard'),
 
   // Tasks
-  getTasks: () => fetchAPI<Task[]>('/tasks'),
+  getTasks: (params?: {
+    page?: number;
+    limit?: number;
+    search?: string;
+    status?: 'pending' | 'completed' | null;
+  }): Promise<{ tasks: Task[]; total: number; page: number; limit: number }> => {
+    const q = new URLSearchParams();
+    if (params?.page)   q.set('page',   String(params.page));
+    if (params?.limit)  q.set('limit',  String(params.limit));
+    if (params?.search) q.set('search', params.search);
+    if (params?.status) q.set('status', params.status);
+    const qs = q.toString();
+    return fetchAPI<{ tasks: Task[]; total: number; page: number; limit: number }>(
+      `/tasks${qs ? `?${qs}` : ''}`
+    );
+  },
 
   createTask: (data: CreateTaskParams) =>
     fetchAPI<{ success: boolean; task: Task }>('/tasks', {

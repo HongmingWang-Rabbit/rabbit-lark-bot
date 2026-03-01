@@ -58,12 +58,33 @@ async function getAllPendingTasks() {
  * Get all tasks (admin view).
  * @param {number} limit
  */
-async function getAllTasks(limit = 100) {
-  const result = await pool.query(
-    `SELECT * FROM tasks ORDER BY created_at DESC LIMIT $1`,
-    [limit]
-  );
-  return result.rows;
+async function getAllTasks({ page = 1, limit = 20, search = '', status = null } = {}) {
+  const offset = (page - 1) * limit;
+  const conditions = [];
+  const values = [];
+  let i = 1;
+
+  if (search) {
+    conditions.push(`title ILIKE $${i}`);
+    values.push(`%${search}%`);
+    i++;
+  }
+  if (status) {
+    conditions.push(`status = $${i++}`);
+    values.push(status);
+  }
+
+  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+
+  const [rowsResult, countResult] = await Promise.all([
+    pool.query(
+      `SELECT * FROM tasks ${where} ORDER BY created_at DESC LIMIT $${i} OFFSET $${i + 1}`,
+      [...values, limit, offset]
+    ),
+    pool.query(`SELECT COUNT(*)::int AS total FROM tasks ${where}`, values),
+  ]);
+
+  return { rows: rowsResult.rows, total: countResult.rows[0].total };
 }
 
 // ── Mutations ─────────────────────────────────────────────────────────────────

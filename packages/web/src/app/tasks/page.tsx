@@ -4,6 +4,7 @@ import { useState, useMemo, useEffect } from 'react';
 import useSWR, { mutate } from 'swr';
 import { api, SWR_KEYS, Task, User, CreateTaskParams, WorkloadUser } from '@/lib/api';
 import UserCombobox from '@/components/UserCombobox';
+import Pagination from '@/components/Pagination';
 import { LoadingState, ErrorState } from '@/components/StatusStates';
 
 // ── constants ────────────────────────────────────────────────────────────────
@@ -35,25 +36,53 @@ function resolveName(openId: string | null, userMap: Map<string, string>) {
 
 // ── page ─────────────────────────────────────────────────────────────────────
 
+const PAGE_SIZE = 20;
+
+function makeSwrKey(page: number, search: string, status: 'pending' | 'completed' | null) {
+  const q = new URLSearchParams({ page: String(page), limit: String(PAGE_SIZE) });
+  if (search) q.set('search', search);
+  if (status) q.set('status', status);
+  return `${SWR_KEYS.tasks}?${q}`;
+}
+
 export default function TasksPage() {
-  const { data: tasks, error, isLoading } = useSWR<Task[]>(SWR_KEYS.tasks, api.getTasks);
-  const userMap = useUserMap();
-  const [showForm, setShowForm] = useState(false);
+  const [page,          setPage]          = useState(1);
+  const [search,        setSearch]        = useState('');
+  const [debouncedSearch, setDebounced]   = useState('');
+  const [filterStatus,  setFilterStatus]  = useState<'pending' | 'completed' | null>(null);
+  const [showForm,      setShowForm]      = useState(false);
 
-  // useMemo must be called before any early returns (Rules of Hooks)
-  const pending   = useMemo(() => (tasks ?? []).filter(t => t.status === 'pending'), [tasks]);
-  const completed = useMemo(() => (tasks ?? []).filter(t => t.status === 'completed'), [tasks]);
+  // Debounce search — 350 ms
+  useEffect(() => {
+    const t = setTimeout(() => { setDebounced(search.trim()); setPage(1); }, 350);
+    return () => clearTimeout(t);
+  }, [search]);
 
-  if (isLoading) return <LoadingState />;
-  if (error) return <ErrorState message={error.message} retryKey={SWR_KEYS.tasks} />;
+  // Reset page when status filter changes
+  useEffect(() => { setPage(1); }, [filterStatus]);
+
+  const swrKey = makeSwrKey(page, debouncedSearch, filterStatus);
+  const { data, error, isLoading } = useSWR(
+    swrKey,
+    () => api.getTasks({ page, limit: PAGE_SIZE, search: debouncedSearch, status: filterStatus })
+  );
+
+  const tasks      = data?.tasks ?? [];
+  const total      = data?.total ?? 0;
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const userMap    = useUserMap();
+
+  const refresh = () => mutate(swrKey);
 
   return (
     <div>
-      <div className="flex justify-between items-center mb-6">
+      {/* Header */}
+      <div className="flex justify-between items-center mb-4">
         <div>
           <h2 className="text-2xl font-bold">催办任务</h2>
           <p className="text-sm text-gray-500 mt-1">
-            待办 {pending.length} / 已完成 {completed.length}
+            催办任务管理
+            {total > 0 && <span className="ml-2 text-gray-400">· 共 {total} 条</span>}
           </p>
         </div>
         <button
@@ -65,22 +94,68 @@ export default function TasksPage() {
       </div>
 
       {showForm && (
-        <TaskForm
-          onSuccess={() => {
-            setShowForm(false);
-            mutate(SWR_KEYS.tasks);
-          }}
-        />
+        <TaskForm onSuccess={() => {
+          setShowForm(false);
+          mutate(makeSwrKey(1, debouncedSearch, filterStatus));
+          setPage(1);
+        }} />
       )}
 
-      <TaskTable tasks={tasks ?? []} userMap={userMap} />
+      {/* Search + filter bar */}
+      <div className="flex flex-wrap gap-3 mb-4">
+        <input
+          type="search"
+          placeholder="搜索任务名称…"
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          className="flex-1 min-w-[180px] max-w-xs border border-gray-300 rounded-lg px-3 py-1.5 text-sm
+                     focus:outline-none focus:ring-2 focus:ring-blue-500"
+        />
+        <select
+          value={filterStatus ?? 'all'}
+          onChange={e => setFilterStatus(e.target.value === 'all' ? null : e.target.value as 'pending' | 'completed')}
+          className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm
+                     focus:outline-none focus:ring-2 focus:ring-blue-500"
+        >
+          <option value="all">全部状态</option>
+          <option value="pending">待办</option>
+          <option value="completed">已完成</option>
+        </select>
+      </div>
+
+      {isLoading && <LoadingState />}
+      {error    && <ErrorState message={error.message} retryKey={swrKey} />}
+
+      {!isLoading && !error && (
+        <>
+          <TaskTable
+            tasks={tasks}
+            userMap={userMap}
+            onRefresh={refresh}
+            emptyMessage={debouncedSearch || filterStatus ? '没有匹配的任务' : '暂无任务'}
+          />
+          {totalPages > 1 && (
+            <Pagination
+              page={page} totalPages={totalPages} total={total}
+              pageSize={PAGE_SIZE} onPageChange={setPage}
+            />
+          )}
+        </>
+      )}
     </div>
   );
 }
 
 // ── sub-components ────────────────────────────────────────────────────────────
 
-function TaskTable({ tasks, userMap }: { tasks: Task[]; userMap: Map<string, string> }) {
+function TaskTable({
+  tasks, userMap, onRefresh, emptyMessage,
+}: {
+  tasks: Task[];
+  userMap: Map<string, string>;
+  onRefresh: () => void;
+  emptyMessage?: string;
+}) {
   return (
     <div className="bg-white rounded-lg shadow overflow-x-auto">
       <table className="w-full min-w-[700px]" aria-label="催办任务列表">
@@ -98,11 +173,13 @@ function TaskTable({ tasks, userMap }: { tasks: Task[]; userMap: Map<string, str
         </thead>
         <tbody className="divide-y">
           {tasks.map((task) => (
-            <TaskRow key={task.id} task={task} userMap={userMap} />
+            <TaskRow key={task.id} task={task} userMap={userMap} onRefresh={onRefresh} />
           ))}
           {tasks.length === 0 && (
             <tr>
-              <td colSpan={8} className="px-4 py-8 text-center text-gray-500">暂无任务</td>
+              <td colSpan={8} className="px-4 py-8 text-center text-gray-500">
+                {emptyMessage ?? '暂无任务'}
+              </td>
             </tr>
           )}
         </tbody>
@@ -111,7 +188,7 @@ function TaskTable({ tasks, userMap }: { tasks: Task[]; userMap: Map<string, str
   );
 }
 
-function TaskRow({ task, userMap }: { task: Task; userMap: Map<string, string> }) {
+function TaskRow({ task, userMap, onRefresh }: { task: Task; userMap: Map<string, string>; onRefresh: () => void }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirming, setConfirming] = useState<'complete' | 'delete' | null>(null);
@@ -121,7 +198,7 @@ function TaskRow({ task, userMap }: { task: Task; userMap: Map<string, string> }
     setError(null);
     try {
       await api.completeTask(String(task.id), {});
-      mutate(SWR_KEYS.tasks);
+      onRefresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : '操作失败');
     } finally {
@@ -135,7 +212,7 @@ function TaskRow({ task, userMap }: { task: Task; userMap: Map<string, string> }
     setError(null);
     try {
       await api.deleteTask(String(task.id));
-      mutate(SWR_KEYS.tasks);
+      onRefresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : '操作失败');
     } finally {

@@ -57,10 +57,17 @@ router.get('/dashboard', async (req, res) => {
 // ============ Tasks ============
 
 // 获取所有任务（DB rows，直接返回）
+// GET /api/tasks?page=1&limit=20&search=&status=pending|completed
 router.get('/tasks', async (req, res) => {
   try {
-    const tasks = await reminderService.getAllTasks();
-    res.json(tasks);
+    const page   = Math.max(1, safeInt(req.query.page, 1));
+    const limit  = Math.min(100, Math.max(1, safeInt(req.query.limit, 20)));
+    const search = (req.query.search || '').trim();
+    const status = ['pending', 'completed'].includes(req.query.status)
+      ? req.query.status : null;
+
+    const { rows, total } = await reminderService.getAllTasks({ page, limit, search, status });
+    res.json({ tasks: rows, total, page, limit });
   } catch (err) {
     res.status(500).json({ error: safeErrorMessage(err) });
   }
