@@ -452,8 +452,6 @@ function TagChipEditor({ tags, onChange }: { tags: string[]; onChange: (t: strin
 
 // ── EditUserModal ─────────────────────────────────────────────────────────────
 
-// ── EditUserModal ─────────────────────────────────────────────────────────────
-
 function EditUserModal({ user, onClose, onSaved }: { user: User; onClose: () => void; onSaved: () => void }) {
   const [form, setForm] = useState({
     name: user.name ?? '',

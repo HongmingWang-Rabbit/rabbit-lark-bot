@@ -308,8 +308,22 @@ export const api = {
     }),
 
   // Scheduled Tasks
-  getScheduledTasks: (): Promise<ScheduledTask[]> =>
-    fetchAPI<{ success: boolean; scheduledTasks: ScheduledTask[] }>('/scheduled-tasks').then(d => d.scheduledTasks),
+  getScheduledTasks: (params?: {
+    page?: number;
+    limit?: number;
+    search?: string;
+    enabled?: boolean | null;
+  }): Promise<{ tasks: ScheduledTask[]; total: number; page: number; limit: number }> => {
+    const q = new URLSearchParams();
+    if (params?.page)    q.set('page',    String(params.page));
+    if (params?.limit)   q.set('limit',   String(params.limit));
+    if (params?.search)  q.set('search',  params.search);
+    if (params?.enabled != null) q.set('enabled', String(params.enabled));
+    const qs = q.toString();
+    return fetchAPI<{ success: boolean; scheduledTasks: ScheduledTask[]; total: number; page: number; limit: number }>(
+      `/scheduled-tasks${qs ? `?${qs}` : ''}`
+    ).then(d => ({ tasks: d.scheduledTasks, total: d.total, page: d.page, limit: d.limit }));
+  },
 
   createScheduledTask: (data: Partial<ScheduledTask> & { name: string; title: string; schedule: string; targetOpenId?: string | null; targetTag?: string | null }): Promise<ScheduledTask> =>
     fetchAPI<{ success: boolean; scheduledTask: ScheduledTask }>('/scheduled-tasks', {

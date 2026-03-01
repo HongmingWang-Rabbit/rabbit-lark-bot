@@ -71,48 +71,79 @@ export default function ScheduledTasksPage() {
   );
 }
 
+const PAGE_SIZE = 20;
+
+/** Stable SWR cache key string built from current query params. */
+function makeSwrKey(page: number, search: string, enabled: boolean | null) {
+  const q = new URLSearchParams({ page: String(page), limit: String(PAGE_SIZE) });
+  if (search)       q.set('search',  search);
+  if (enabled != null) q.set('enabled', String(enabled));
+  return `${SWR_KEYS.scheduledTasks}?${q}`;
+}
+
 function ScheduledTasksContent() {
-  const { data: tasks = [], error, isLoading } = useSWR<ScheduledTask[]>(
-    SWR_KEYS.scheduledTasks,
-    api.getScheduledTasks
+  const [page,          setPage]          = useState(1);
+  const [search,        setSearch]        = useState('');
+  const [debouncedSearch, setDebounced]   = useState('');
+  const [filterEnabled, setFilterEnabled] = useState<boolean | null>(null);
+
+  // Debounce search input — 350 ms
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setDebounced(search.trim());
+      setPage(1);
+    }, 350);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  // Reset page when enabled filter changes
+  useEffect(() => { setPage(1); }, [filterEnabled]);
+
+  const swrKey = makeSwrKey(page, debouncedSearch, filterEnabled);
+  const { data, error, isLoading } = useSWR(
+    swrKey,
+    () => api.getScheduledTasks({ page, limit: PAGE_SIZE, search: debouncedSearch, enabled: filterEnabled })
   );
+
+  const tasks      = data?.tasks ?? [];
+  const total      = data?.total ?? 0;
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+
+  // Invalidate only the current page view
+  const refresh = () => mutate(swrKey);
+
   const { data: usersData } = useSWR(SWR_KEYS.users, api.getUsers);
-  // Build open_id → name lookup map
   const userMap: Record<string, string> = {};
   (usersData ?? []).forEach((u: User) => {
     if (u.openId) userMap[u.openId] = u.name || u.openId;
   });
 
-  const [showForm, setShowForm] = useState(false);
-  const [editingTask, setEditingTask] = useState<ScheduledTask | null>(null);
+  const [showForm,     setShowForm]     = useState(false);
+  const [editingTask,  setEditingTask]  = useState<ScheduledTask | null>(null);
 
-  const handleCreate = () => {
-    setEditingTask(null);
-    setShowForm(true);
-  };
-
-  const handleEdit = (task: ScheduledTask) => {
-    setEditingTask(task);
-    setShowForm(true);
-  };
-
-  const handleFormClose = () => {
-    setShowForm(false);
-    setEditingTask(null);
-  };
+  const handleCreate = () => { setEditingTask(null); setShowForm(true); };
+  const handleEdit   = (task: ScheduledTask) => { setEditingTask(task); setShowForm(true); };
+  const handleFormClose = () => { setShowForm(false); setEditingTask(null); };
 
   const handleFormSuccess = () => {
     setShowForm(false);
     setEditingTask(null);
-    mutate(SWR_KEYS.scheduledTasks);
+    // New task appears at the top (ORDER BY created_at DESC) → go to page 1
+    const p1Key = makeSwrKey(1, debouncedSearch, filterEnabled);
+    mutate(p1Key);
+    setPage(1);
   };
 
   return (
     <div>
-      <div className="flex justify-between items-center mb-6">
+      {/* Header */}
+      <div className="flex justify-between items-center mb-4">
         <div>
           <h2 className="text-2xl font-bold">定时任务</h2>
-          <p className="text-sm text-gray-500 mt-1">基于 cron 表达式自动创建催办任务</p>
+          <p className="text-sm text-gray-500 mt-1">
+            基于 cron 表达式自动创建催办任务
+            {total > 0 && <span className="ml-2 text-gray-400">· 共 {total} 条</span>}
+          </p>
         </div>
         <button
           onClick={handleCreate}
@@ -131,14 +162,48 @@ function ScheduledTasksContent() {
         />
       )}
 
-      {isLoading && (
-        <div className="text-center py-8 text-gray-400">加载中…</div>
-      )}
-      {error && (
-        <div className="p-4 bg-red-50 text-red-700 rounded-lg mb-4">{error.message}</div>
-      )}
+      {/* Search + filter bar */}
+      <div className="flex flex-wrap gap-3 mb-4">
+        <input
+          type="search"
+          placeholder="搜索名称或标题…"
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          className="flex-1 min-w-[180px] max-w-xs border border-gray-300 rounded-lg px-3 py-1.5 text-sm
+                     focus:outline-none focus:ring-2 focus:ring-blue-500"
+        />
+        <select
+          value={filterEnabled === null ? 'all' : String(filterEnabled)}
+          onChange={e => setFilterEnabled(e.target.value === 'all' ? null : e.target.value === 'true')}
+          className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm
+                     focus:outline-none focus:ring-2 focus:ring-blue-500"
+        >
+          <option value="all">全部状态</option>
+          <option value="true">已启用</option>
+          <option value="false">已禁用</option>
+        </select>
+      </div>
+
+      {isLoading && <div className="text-center py-8 text-gray-400">加载中…</div>}
+      {error    && <div className="p-4 bg-red-50 text-red-700 rounded-lg mb-4">{error.message}</div>}
+
       {!isLoading && !error && (
-        <ScheduledTaskTable tasks={tasks} onEdit={handleEdit} userMap={userMap} />
+        <>
+          <ScheduledTaskTable
+            tasks={tasks}
+            onEdit={handleEdit}
+            userMap={userMap}
+            onRefresh={refresh}
+            emptyMessage={
+              debouncedSearch || filterEnabled !== null
+                ? '没有匹配的定时任务'
+                : '暂无定时任务，点击「新增定时任务」创建'
+            }
+          />
+          {totalPages > 1 && (
+            <Pagination page={page} totalPages={totalPages} total={total} onPageChange={setPage} />
+          )}
+        </>
       )}
     </div>
   );
@@ -150,10 +215,14 @@ function ScheduledTaskTable({
   tasks,
   onEdit,
   userMap,
+  onRefresh,
+  emptyMessage,
 }: {
   tasks: ScheduledTask[];
   onEdit: (t: ScheduledTask) => void;
   userMap: Record<string, string>;
+  onRefresh: () => void;
+  emptyMessage?: string;
 }) {
   return (
     <div className="bg-white rounded-lg shadow overflow-x-auto">
@@ -172,12 +241,12 @@ function ScheduledTaskTable({
         </thead>
         <tbody className="divide-y">
           {tasks.map((task) => (
-            <ScheduledTaskRow key={task.id} task={task} onEdit={onEdit} userMap={userMap} />
+            <ScheduledTaskRow key={task.id} task={task} onEdit={onEdit} userMap={userMap} onRefresh={onRefresh} />
           ))}
           {tasks.length === 0 && (
             <tr>
               <td colSpan={8} className="px-4 py-8 text-center text-gray-400">
-                暂无定时任务，点击「新增定时任务」创建
+                {emptyMessage ?? '暂无定时任务'}
               </td>
             </tr>
           )}
@@ -191,10 +260,12 @@ function ScheduledTaskRow({
   task,
   onEdit,
   userMap,
+  onRefresh,
 }: {
   task: ScheduledTask;
   onEdit: (t: ScheduledTask) => void;
   userMap: Record<string, string>;
+  onRefresh: () => void;
 }) {
   const [loading, setLoading] = useState(false);
   const [confirming, setConfirming] = useState(false);
@@ -203,7 +274,7 @@ function ScheduledTaskRow({
     setLoading(true);
     try {
       await api.updateScheduledTask(task.id, { enabled: !task.enabled });
-      mutate(SWR_KEYS.scheduledTasks);
+      onRefresh();
     } finally {
       setLoading(false);
     }
@@ -213,7 +284,7 @@ function ScheduledTaskRow({
     setLoading(true);
     try {
       await api.deleteScheduledTask(task.id);
-      mutate(SWR_KEYS.scheduledTasks);
+      onRefresh();
     } finally {
       setLoading(false);
       setConfirming(false);
@@ -327,6 +398,79 @@ function ScheduledTaskRow({
         </div>
       </td>
     </tr>
+  );
+}
+
+// ── Pagination ────────────────────────────────────────────────────────────────
+
+function Pagination({
+  page,
+  totalPages,
+  total,
+  onPageChange,
+}: {
+  page: number;
+  totalPages: number;
+  total: number;
+  onPageChange: (p: number) => void;
+}) {
+  // Build visible page numbers: always show first, last, current ±2, with ellipsis gaps
+  const pages: (number | '...')[] = [];
+  const addPage = (n: number) => {
+    if (n < 1 || n > totalPages) return;
+    if (pages[pages.length - 1] === n) return;
+    pages.push(n);
+  };
+  const addEllipsis = () => {
+    if (pages[pages.length - 1] !== '...') pages.push('...');
+  };
+
+  addPage(1);
+  if (page - 3 > 2) addEllipsis();
+  for (let i = Math.max(2, page - 2); i <= Math.min(totalPages - 1, page + 2); i++) addPage(i);
+  if (page + 3 < totalPages - 1) addEllipsis();
+  if (totalPages > 1) addPage(totalPages);
+
+  const btnBase = 'px-3 py-1.5 text-sm rounded-md border transition-colors';
+  const active  = `${btnBase} bg-blue-500 text-white border-blue-500`;
+  const normal  = `${btnBase} border-gray-300 text-gray-700 hover:bg-gray-50`;
+  const disabled = `${btnBase} border-gray-200 text-gray-300 cursor-not-allowed`;
+
+  return (
+    <div className="flex items-center justify-between mt-4 px-1">
+      <span className="text-sm text-gray-500">
+        第 {(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, total)} 条，共 {total} 条
+      </span>
+      <div className="flex items-center gap-1.5">
+        <button
+          onClick={() => onPageChange(page - 1)}
+          disabled={page <= 1}
+          className={page <= 1 ? disabled : normal}
+        >
+          ‹ 上一页
+        </button>
+        {pages.map((p, idx) =>
+          p === '...' ? (
+            <span key={`ellipsis-${idx}`} className="px-1 text-gray-400">…</span>
+          ) : (
+            <button
+              key={p}
+              onClick={() => onPageChange(p)}
+              className={p === page ? active : normal}
+            >
+              {p}
+            </button>
+          )
+        )}
+        <button
+          onClick={() => onPageChange(page + 1)}
+          disabled={page >= totalPages}
+          className={page >= totalPages ? disabled : normal}
+        >
+          下一页 ›
+        </button>
+      </div>
+    </div>
   );
 }
 

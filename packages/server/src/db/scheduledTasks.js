@@ -4,9 +4,45 @@ const pool = require('./pool');
 const nullIfEmpty = (v) => (v === '' || v === null || v === undefined ? null : v);
 
 const scheduledTasksDb = {
-  async list() {
-    const { rows } = await pool.query('SELECT * FROM scheduled_tasks ORDER BY created_at DESC');
-    return rows;
+  /**
+   * Paginated list with optional search and enabled filter.
+   * @param {object} opts
+   * @param {number} [opts.page=1]    - 1-based page number
+   * @param {number} [opts.limit=20]  - rows per page (max 100)
+   * @param {string} [opts.search=''] - ILIKE match against name and title
+   * @param {boolean|null} [opts.enabled=null] - null = all, true/false = filter
+   * @returns {Promise<{rows: object[], total: number}>}
+   */
+  async list({ page = 1, limit = 20, search = '', enabled = null } = {}) {
+    const offset = (page - 1) * limit;
+    const conditions = [];
+    const values = [];
+    let i = 1;
+
+    if (search) {
+      conditions.push(`(name ILIKE $${i} OR title ILIKE $${i})`);
+      values.push(`%${search}%`);
+      i++;
+    }
+    if (enabled !== null) {
+      conditions.push(`enabled = $${i++}`);
+      values.push(enabled);
+    }
+
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+
+    const [rowsResult, countResult] = await Promise.all([
+      pool.query(
+        `SELECT * FROM scheduled_tasks ${where} ORDER BY created_at DESC LIMIT $${i} OFFSET $${i + 1}`,
+        [...values, limit, offset]
+      ),
+      pool.query(`SELECT COUNT(*)::int AS total FROM scheduled_tasks ${where}`, values),
+    ]);
+
+    return {
+      rows: rowsResult.rows,
+      total: countResult.rows[0].total,
+    };
   },
 
   async get(id) {

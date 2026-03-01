@@ -255,11 +255,18 @@ router.get('/audit', async (req, res) => {
 
 // ============ Scheduled Tasks ============
 
-// GET /api/scheduled-tasks
+// GET /api/scheduled-tasks?page=1&limit=20&search=&enabled=
 router.get('/scheduled-tasks', async (req, res) => {
   try {
-    const list = await scheduledTasksDb.list();
-    res.json({ success: true, scheduledTasks: list });
+    const page    = Math.max(1, safeInt(req.query.page, 1));
+    const limit   = Math.min(100, Math.max(1, safeInt(req.query.limit, 20)));
+    const search  = (req.query.search || '').trim();
+    const enabled =
+      req.query.enabled === 'true'  ? true :
+      req.query.enabled === 'false' ? false : null;
+
+    const { rows, total } = await scheduledTasksDb.list({ page, limit, search, enabled });
+    res.json({ success: true, scheduledTasks: rows, total, page, limit });
   } catch (err) {
     res.status(500).json({ error: safeErrorMessage(err) });
   }
