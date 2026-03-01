@@ -148,6 +148,8 @@ export default function TasksPage() {
 
 // ── sub-components ────────────────────────────────────────────────────────────
 
+const TH = 'px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wide whitespace-nowrap';
+
 function TaskTable({
   tasks, userMap, onRefresh, emptyMessage,
 }: {
@@ -158,26 +160,24 @@ function TaskTable({
 }) {
   return (
     <div className="bg-white rounded-lg shadow overflow-x-auto">
-      <table className="w-full min-w-[700px]" aria-label="催办任务列表">
-        <thead className="bg-gray-50">
+      <table className="w-full min-w-[640px]" aria-label="催办任务列表">
+        <thead className="bg-gray-50 border-b border-gray-200">
           <tr>
-            <th className="px-4 py-3 text-left text-sm font-medium text-gray-500">任务名称</th>
-            <th className="px-4 py-3 text-left text-sm font-medium text-gray-500">优先级</th>
-            <th className="px-4 py-3 text-left text-sm font-medium text-gray-500">催办对象</th>
-            <th className="px-4 py-3 text-left text-sm font-medium text-gray-500">报告对象</th>
-            <th className="px-4 py-3 text-left text-sm font-medium text-gray-500">状态</th>
-            <th className="px-4 py-3 text-left text-sm font-medium text-gray-500">截止时间</th>
-            <th className="px-4 py-3 text-left text-sm font-medium text-gray-500">提醒间隔</th>
-            <th className="px-4 py-3 text-left text-sm font-medium text-gray-500">操作</th>
+            <th className={TH}>任务名称</th>
+            <th className={`${TH} w-20`}>优先级</th>
+            <th className={`${TH} w-28`}>催办对象</th>
+            <th className={`${TH} w-20`}>状态</th>
+            <th className={`${TH} w-24`}>截止时间</th>
+            <th className={`${TH} w-20`}>操作</th>
           </tr>
         </thead>
-        <tbody className="divide-y">
+        <tbody className="divide-y divide-gray-100">
           {tasks.map((task) => (
             <TaskRow key={task.id} task={task} userMap={userMap} onRefresh={onRefresh} />
           ))}
           {tasks.length === 0 && (
             <tr>
-              <td colSpan={8} className="px-4 py-8 text-center text-gray-500">
+              <td colSpan={6} className="px-4 py-10 text-center text-gray-400 text-sm">
                 {emptyMessage ?? '暂无任务'}
               </td>
             </tr>
@@ -224,113 +224,108 @@ function TaskRow({ task, userMap, onRefresh }: { task: Task; userMap: Map<string
   const assigneeName = resolveName(task.assignee_open_id, userMap);
   const reporterName = resolveName(task.reporter_open_id, userMap);
 
+  const badge = PRIORITY_BADGE[task.priority] || PRIORITY_BADGE['p1'];
+
   return (
     <>
-      <tr className={`hover:bg-gray-50 ${loading ? 'opacity-50' : ''}`}>
-        <td className="px-4 py-3 font-medium">
-          {task.title}
-          {task.note && <p className="text-xs text-gray-400 mt-0.5">{task.note}</p>}
-          <div className="flex gap-1.5 mt-0.5 flex-wrap">
+      <tr className={`hover:bg-gray-50 transition-colors ${loading ? 'opacity-50' : ''}`}>
+
+        {/* 任务名称 — title + note + secondary tags */}
+        <td className="px-3 py-2.5">
+          <p className="text-sm font-medium text-gray-900 leading-snug">{task.title}</p>
+          {task.note && (
+            <p className="text-xs text-gray-400 mt-0.5 truncate max-w-xs" title={task.note}>
+              {task.note}
+            </p>
+          )}
+          {/* Secondary meta: reporter / reminder / workload tags */}
+          <div className="flex gap-1.5 mt-1 flex-wrap">
+            {task.reporter_open_id && reporterName && (
+              <span className="text-xs text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded">
+                ↩ {reporterName}
+              </span>
+            )}
+            {task.reminder_interval_hours > 0 && task.reminder_interval_hours !== 24 && (
+              <span className="text-xs text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded">
+                ⏰ {task.reminder_interval_hours}h
+              </span>
+            )}
             {task.estimated_hours != null && (
               <span className="text-xs text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded">
                 ⏱ {task.estimated_hours}h
               </span>
             )}
             {task.target_tag && (
-              <span className="text-xs text-purple-700 bg-purple-50 px-1.5 py-0.5 rounded">
+              <span className="text-xs text-purple-600 bg-purple-50 px-1.5 py-0.5 rounded">
                 #{task.target_tag}
               </span>
             )}
           </div>
         </td>
-        <td className="px-4 py-3">
-          {(() => {
-            const badge = PRIORITY_BADGE[task.priority] || PRIORITY_BADGE['p1'];
-            return (
-              <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${badge.className}`}>
-                {badge.label}
-              </span>
-            );
-          })()}
+
+        {/* 优先级 */}
+        <td className="px-3 py-2.5 whitespace-nowrap">
+          <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${badge.className}`}>
+            {badge.label}
+          </span>
         </td>
-        <td className="px-4 py-3 text-gray-600">{assigneeName}</td>
-        <td className="px-4 py-3 text-gray-600">
-          {task.reporter_open_id ? (
-            <span title={task.reporter_open_id}>{reporterName}</span>
-          ) : (
-            <span className="text-gray-300">—</span>
-          )}
+
+        {/* 催办对象 */}
+        <td className="px-3 py-2.5 whitespace-nowrap text-sm text-gray-700">
+          {assigneeName || <span className="text-gray-300">—</span>}
         </td>
-        <td className="px-4 py-3">
+
+        {/* 状态 */}
+        <td className="px-3 py-2.5 whitespace-nowrap">
           <StatusBadge status={task.status} />
         </td>
-        <td className="px-4 py-3 text-sm text-gray-500">
+
+        {/* 截止时间 */}
+        <td className="px-3 py-2.5 whitespace-nowrap text-sm text-gray-500">
           {task.deadline
-            ? new Date(task.deadline).toLocaleDateString('zh-CN')
+            ? new Date(task.deadline).toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })
             : <span className="text-gray-300">—</span>}
         </td>
-        <td className="px-4 py-3 text-sm text-gray-500">
-          {task.reminder_interval_hours > 0
-            ? `每 ${task.reminder_interval_hours}h`
-            : <span className="text-gray-300">关闭</span>}
-        </td>
-        <td className="px-4 py-3">
-          <div className="flex gap-3 items-center">
-            {confirming ? (
-              <>
-                <span className="text-xs text-gray-500">
-                  {confirming === 'complete' ? '确认完成？' : '确认删除？'}
-                </span>
-                <button
-                  onClick={confirming === 'complete' ? handleComplete : handleDelete}
-                  disabled={loading}
-                  className={`text-xs font-medium px-2 py-0.5 rounded ${
-                    confirming === 'delete' ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'
-                  } disabled:opacity-50`}
-                >
-                  确认
+
+        {/* 操作 */}
+        <td className="px-3 py-2.5 whitespace-nowrap">
+          {confirming ? (
+            <div className="flex items-center gap-1.5">
+              <button onClick={confirming === 'complete' ? handleComplete : handleDelete}
+                disabled={loading}
+                className={`text-xs font-medium px-2 py-0.5 rounded disabled:opacity-50 ${
+                  confirming === 'delete'
+                    ? 'bg-red-100 text-red-700 hover:bg-red-200'
+                    : 'bg-green-100 text-green-700 hover:bg-green-200'
+                }`}>
+                {loading ? '…' : '确认'}
+              </button>
+              <button onClick={() => setConfirming(null)} disabled={loading}
+                className="text-xs text-gray-400 hover:text-gray-600">取消</button>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2">
+              {task.status === 'pending' && (
+                <button onClick={() => setConfirming('complete')} disabled={loading}
+                  className="text-xs text-green-600 hover:text-green-800 font-medium disabled:opacity-50">
+                  完成
                 </button>
-                <button
-                  onClick={() => setConfirming(null)}
-                  disabled={loading}
-                  className="text-xs text-gray-400 hover:text-gray-600"
-                >
-                  取消
-                </button>
-              </>
-            ) : (
-              <>
-                {task.status === 'pending' && (
-                  <button
-                    onClick={() => setConfirming('complete')}
-                    disabled={loading}
-                    aria-label={`完成任务「${task.title}」`}
-                    className="text-green-600 hover:text-green-800 disabled:opacity-50"
-                  >
-                    完成
-                  </button>
-                )}
-                <button
-                  onClick={() => setConfirming('delete')}
-                  disabled={loading}
-                  aria-label={`删除任务「${task.title}」`}
-                  className="text-red-600 hover:text-red-800 disabled:opacity-50"
-                >
-                  删除
-                </button>
-              </>
-            )}
-          </div>
+              )}
+              <button onClick={() => setConfirming('delete')} disabled={loading}
+                className="text-xs text-red-500 hover:text-red-700 disabled:opacity-50">
+                删除
+              </button>
+            </div>
+          )}
         </td>
       </tr>
+
       {error && (
         <tr>
-          <td colSpan={8} className="px-4 py-2">
-            <div className="flex items-center gap-2 text-sm text-red-600 bg-red-50 rounded px-3 py-1.5">
+          <td colSpan={6} className="px-3 py-1.5">
+            <div className="flex items-center gap-2 text-xs text-red-600 bg-red-50 rounded px-3 py-1.5">
               <span>{error}</span>
-              <button onClick={() => setError(null)} className="text-red-400 hover:text-red-600 ml-auto">
-                &times;
-              </button>
+              <button onClick={() => setError(null)} className="ml-auto text-red-400 hover:text-red-600">×</button>
             </div>
           </td>
         </tr>
@@ -342,14 +337,14 @@ function TaskRow({ task, userMap, onRefresh }: { task: Task; userMap: Map<string
 function StatusBadge({ status }: { status: Task['status'] }) {
   if (status === 'completed') {
     return (
-      <span className="px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800">
-        ✅ 已完成
+      <span className="inline-block px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700 whitespace-nowrap">
+        已完成
       </span>
     );
   }
   return (
-    <span className="px-2 py-1 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800">
-      ⏳ 待办
+    <span className="inline-block px-2 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-700 whitespace-nowrap">
+      待办
     </span>
   );
 }
