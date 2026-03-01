@@ -2,10 +2,24 @@
 
 import { useState, useEffect } from 'react';
 import useSWR, { mutate } from 'swr';
+import cronstrue from 'cronstrue/i18n';
 import { api, SWR_KEYS, ScheduledTask, User, WorkloadUser } from '@/lib/api';
 import AdminGuard from '@/components/AdminGuard';
 import UserCombobox from '@/components/UserCombobox';
 import FeishuUserLookup from '@/components/FeishuUserLookup';
+
+/**
+ * Translate a cron expression into plain Chinese.
+ * Returns '' if the expression is invalid.
+ */
+function describeCron(expr: string): string {
+  if (!expr) return '';
+  try {
+    return cronstrue.toString(expr, { locale: 'zh_CN', use24HourTimeFormat: true });
+  } catch {
+    return '';
+  }
+}
 
 // ── constants ────────────────────────────────────────────────────────────────
 
@@ -327,9 +341,14 @@ function ScheduledTaskRow({
         )}
       </td>
 
-      {/* 执行时间 — cron + timezone 同一行 */}
-      <td className="px-4 py-2 whitespace-nowrap">
+      {/* 执行时间 — cron + 人话描述 + timezone */}
+      <td className="px-4 py-2">
         <span className="text-xs font-mono bg-gray-100 px-1.5 py-0.5 rounded">{task.schedule}</span>
+        {describeCron(task.schedule) && (
+          <span className="text-xs text-blue-600 block mt-0.5 leading-snug">
+            {describeCron(task.schedule)}
+          </span>
+        )}
         <span className="text-xs text-gray-400 block mt-0.5">{task.timezone}</span>
       </td>
 
@@ -740,6 +759,18 @@ function ScheduledTaskForm({
               className="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent font-mono text-sm"
             />
           )}
+          {/* Human-readable cron preview */}
+          {(() => {
+            const desc = describeCron(form.schedule);
+            const isInvalid = form.schedulePreset === 'custom' && form.schedule && !desc;
+            return desc ? (
+              <p className="mt-1 text-xs text-blue-600 flex items-center gap-1">
+                <span>🕐</span> {desc}
+              </p>
+            ) : isInvalid ? (
+              <p className="mt-1 text-xs text-red-500">无效的 cron 表达式</p>
+            ) : null;
+          })()}
           {form.schedulePreset !== 'custom' && (
             <span className="text-xs text-gray-400 font-mono">{form.schedule}</span>
           )}
