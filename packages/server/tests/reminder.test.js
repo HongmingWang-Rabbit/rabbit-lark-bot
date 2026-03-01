@@ -103,7 +103,9 @@ describe('Reminder Service', () => {
         creatorId: 'creator_1',
       });
 
-      expect(task).toEqual(mockTask);
+      // createTask spreads the DB row and augments with assignee_name —
+      // use toMatchObject so extra fields don't cause a false failure.
+      expect(task).toMatchObject(mockTask);
       expect(mockQuery).toHaveBeenCalledWith(
         expect.stringContaining('INSERT INTO tasks'),
         expect.arrayContaining(['Test', 'user_123', 'ou_123'])
