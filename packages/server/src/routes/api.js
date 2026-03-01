@@ -275,10 +275,14 @@ function safeInt(val, fallback) {
 // POST /api/scheduled-tasks
 router.post('/scheduled-tasks', async (req, res) => {
   try {
-    const { name, title, targetOpenId, reporterOpenId, schedule, timezone,
+    const { name, title, targetOpenId, targetTag, reporterOpenId, schedule, timezone,
             deadlineDays, priority, note, reminderIntervalHours } = req.body;
-    if (!name || !title || !targetOpenId || !schedule) {
-      return res.status(400).json({ error: 'name, title, targetOpenId, schedule are required' });
+    // Must have either a specific assignee OR a tag group for auto-assignment
+    if (!name || !title || !schedule) {
+      return res.status(400).json({ error: 'name, title, schedule are required' });
+    }
+    if (!targetOpenId && !targetTag) {
+      return res.status(400).json({ error: 'Provide targetOpenId (specific user) or targetTag (auto-assign by workload)' });
     }
     if (!cron.validate(schedule)) {
       return res.status(400).json({ error: `Invalid cron expression: ${schedule}` });
@@ -287,7 +291,7 @@ router.post('/scheduled-tasks', async (req, res) => {
       return res.status(400).json({ error: `Invalid priority: ${priority}. Must be p0, p1, or p2` });
     }
     const st = await scheduledTasksDb.create({
-      name, title, targetOpenId, reporterOpenId, schedule,
+      name, title, targetOpenId, targetTag, reporterOpenId, schedule,
       timezone: timezone || 'Asia/Shanghai',
       deadlineDays: Math.max(0, safeInt(deadlineDays, 1)),
       priority: priority || 'p1',
@@ -307,7 +311,7 @@ router.patch('/scheduled-tasks/:id', async (req, res) => {
   try {
     const id = parseInt(req.params.id);
     if (isNaN(id)) return res.status(400).json({ error: 'Invalid ID' });
-    const { name, title, targetOpenId, reporterOpenId, schedule, timezone,
+    const { name, title, targetOpenId, targetTag, reporterOpenId, schedule, timezone,
             deadlineDays, priority, note, reminderIntervalHours, enabled } = req.body;
     if (schedule !== undefined && !cron.validate(schedule)) {
       return res.status(400).json({ error: `Invalid cron expression: ${schedule}` });
@@ -316,7 +320,7 @@ router.patch('/scheduled-tasks/:id', async (req, res) => {
       return res.status(400).json({ error: `Invalid priority: ${priority}. Must be p0, p1, or p2` });
     }
     const st = await scheduledTasksDb.update(id, {
-      name, title, targetOpenId, reporterOpenId, schedule, timezone,
+      name, title, targetOpenId, targetTag, reporterOpenId, schedule, timezone,
       deadlineDays: deadlineDays !== undefined ? Math.max(0, safeInt(deadlineDays, 1)) : undefined,
       priority, note,
       reminderIntervalHours: reminderIntervalHours !== undefined ? Math.max(0, safeInt(reminderIntervalHours, 24)) : undefined,
@@ -339,6 +343,32 @@ router.delete('/scheduled-tasks/:id', async (req, res) => {
     if (!st) return res.status(404).json({ error: 'Not found' });
     await reloadScheduler();
     res.json({ success: true, scheduledTask: st });
+  } catch (err) {
+    res.status(500).json({ error: safeErrorMessage(err) });
+  }
+});
+
+// GET /api/workload?tag=finance  — returns users in a tag group with pending-task counts
+// GET /api/workload              — returns workload for all users
+router.get('/workload', async (req, res) => {
+  try {
+    const { tag } = req.query;
+    const usersList = tag
+      ? await usersDb.findByTag(tag)
+      : await usersDb.list();
+
+    const openIds = usersList.map(u => u.open_id).filter(Boolean);
+    const workload = await usersDb.getWorkload(openIds);
+
+    const result = usersList.map(u => ({
+      userId: u.user_id,
+      openId: u.open_id,
+      name: u.name,
+      tags: u.tags ?? [],
+      pendingTasks: workload[u.open_id] ?? 0,
+    })).sort((a, b) => a.pendingTasks - b.pendingTasks);
+
+    res.json({ success: true, tag: tag || null, users: result });
   } catch (err) {
     res.status(500).json({ error: safeErrorMessage(err) });
   }

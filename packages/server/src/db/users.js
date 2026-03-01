@@ -269,6 +269,86 @@ const users = {
   },
 
   /**
+   * Set the tags array for a user (replaces existing tags).
+   * @param {string} userId
+   * @param {string[]} tags  e.g. ['finance', 'ops']
+   * @returns {Promise<object>} updated user row
+   */
+  async updateTags(userId, tags) {
+    if (!Array.isArray(tags)) throw new Error('tags must be an array');
+    // Normalise: lowercase, trim, remove empty
+    const clean = tags.map(t => String(t).toLowerCase().trim()).filter(Boolean);
+    const result = await pool.query(
+      'UPDATE users SET tags = $2 WHERE user_id = $1 RETURNING *',
+      [userId, clean]
+    );
+    if (!result.rows[0]) throw new Error('User not found');
+    return result.rows[0];
+  },
+
+  /**
+   * Find all users who have the given tag (case-insensitive).
+   * @param {string} tag
+   * @returns {Promise<object[]>}
+   */
+  async findByTag(tag) {
+    const result = await pool.query(
+      `SELECT * FROM users WHERE $1 = ANY(tags) ORDER BY name`,
+      [tag.toLowerCase().trim()]
+    );
+    return result.rows;
+  },
+
+  /**
+   * Get pending-task workload counts for a list of open_ids.
+   * Returns a map: { [open_id]: pendingCount }
+   * Users with no tasks are included with count 0.
+   * @param {string[]} openIds
+   * @returns {Promise<Record<string, number>>}
+   */
+  async getWorkload(openIds) {
+    if (!openIds.length) return {};
+    const result = await pool.query(
+      `SELECT assignee_open_id, COUNT(*)::int AS pending
+       FROM tasks
+       WHERE status = 'pending'
+         AND assignee_open_id = ANY($1)
+       GROUP BY assignee_open_id`,
+      [openIds]
+    );
+    const map = {};
+    for (const id of openIds) map[id] = 0;
+    for (const row of result.rows) map[row.assignee_open_id] = row.pending;
+    return map;
+  },
+
+  /**
+   * Pick the user in a tag group with the lowest pending-task workload.
+   * If multiple users are tied, picks randomly among the tied set.
+   * Returns null if no users found for the tag.
+   * @param {string} tag
+   * @returns {Promise<object|null>} user row or null
+   */
+  async pickByWorkload(tag) {
+    const tagUsers = await users.findByTag(tag);
+    if (!tagUsers.length) return null;
+
+    const openIds = tagUsers.map(u => u.open_id).filter(Boolean);
+    const workload = await users.getWorkload(openIds);
+
+    // Sort by workload ascending; randomly shuffle ties
+    const sorted = tagUsers
+      .filter(u => u.open_id)
+      .sort((a, b) => {
+        const diff = (workload[a.open_id] ?? 0) - (workload[b.open_id] ?? 0);
+        if (diff !== 0) return diff;
+        return Math.random() - 0.5; // random tie-break
+      });
+
+    return sorted[0] || null;
+  },
+
+  /**
    * Check if a user exists and has admin or superadmin role.
    * NOTE: This checks users.role (feature permissions). For API access control,
    * see admins.isAdmin() in db/index.js which checks the separate admins table.

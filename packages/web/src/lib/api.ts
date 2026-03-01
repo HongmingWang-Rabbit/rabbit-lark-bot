@@ -22,7 +22,8 @@ export interface ScheduledTask {
   id: number;
   name: string;
   title: string;
-  target_open_id: string;
+  target_open_id: string | null;   // null when using tag-based auto-assignment
+  target_tag: string | null;       // tag group for workload-based auto-assignment
   reporter_open_id: string | null;
   schedule: string;
   timezone: string;
@@ -33,6 +34,14 @@ export interface ScheduledTask {
   enabled: boolean;
   last_run_at: string | null;
   created_at: string;
+}
+
+export interface WorkloadUser {
+  userId: string;
+  openId: string | null;
+  name: string | null;
+  tags: string[];
+  pendingTasks: number;
 }
 
 export interface CreateTaskParams {
@@ -73,6 +82,7 @@ export interface User {
   email: string | null;
   phone: string | null;
   role: UserRole;
+  tags: string[];
   configs: { features?: Record<string, boolean> };
   resolvedFeatures?: Record<string, boolean>;
   createdAt: string;
@@ -139,6 +149,7 @@ export const SWR_KEYS = {
   features: '/users/_features',
   apiKeys: '/api-keys',
   scheduledTasks: '/scheduled-tasks',
+  workload: '/workload',
 } as const;
 
 // ============ API 配置 ============
@@ -267,7 +278,7 @@ export const api = {
   upsertUser: (data: { userId: string; name?: string; email?: string; role?: UserRole; openId?: string }) =>
     fetchAPI<{ user: User }>('/users', { method: 'POST', body: JSON.stringify(data) }).then(r => r.user),
 
-  updateUser: (userId: string, data: { role?: UserRole; configs?: { features?: Record<string, boolean> }; name?: string | null; email?: string | null; phone?: string | null }) =>
+  updateUser: (userId: string, data: { role?: UserRole; configs?: { features?: Record<string, boolean> }; name?: string | null; email?: string | null; phone?: string | null; tags?: string[] }) =>
     fetchAPI<{ user: User }>(`/users/${userId}`, { method: 'PATCH', body: JSON.stringify(data) }).then(r => r.user),
 
   setFeature: (userId: string, featureId: string, enabled: boolean) =>
@@ -299,17 +310,22 @@ export const api = {
   getScheduledTasks: (): Promise<ScheduledTask[]> =>
     fetchAPI<{ success: boolean; scheduledTasks: ScheduledTask[] }>('/scheduled-tasks').then(d => d.scheduledTasks),
 
-  createScheduledTask: (data: Partial<ScheduledTask> & { name: string; title: string; targetOpenId: string; schedule: string }): Promise<ScheduledTask> =>
+  createScheduledTask: (data: Partial<ScheduledTask> & { name: string; title: string; schedule: string; targetOpenId?: string | null; targetTag?: string | null }): Promise<ScheduledTask> =>
     fetchAPI<{ success: boolean; scheduledTask: ScheduledTask }>('/scheduled-tasks', {
       method: 'POST',
       body: JSON.stringify(data),
     }).then(d => d.scheduledTask),
 
-  updateScheduledTask: (id: number, data: Partial<ScheduledTask> & { targetOpenId?: string }): Promise<ScheduledTask> =>
+  updateScheduledTask: (id: number, data: Partial<ScheduledTask> & { targetOpenId?: string | null; targetTag?: string | null }): Promise<ScheduledTask> =>
     fetchAPI<{ success: boolean; scheduledTask: ScheduledTask }>(`/scheduled-tasks/${id}`, {
       method: 'PATCH',
       body: JSON.stringify(data),
     }).then(d => d.scheduledTask),
+
+  getWorkload: (tag?: string): Promise<WorkloadUser[]> =>
+    fetchAPI<{ success: boolean; users: WorkloadUser[] }>(
+      tag ? `/workload?tag=${encodeURIComponent(tag)}` : '/workload'
+    ).then(d => d.users),
 
   deleteScheduledTask: (id: number): Promise<void> =>
     fetchAPI<{ success: boolean }>(`/scheduled-tasks/${id}`, { method: 'DELETE' }).then(() => undefined),

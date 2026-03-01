@@ -11,6 +11,32 @@ const usersDb = require('../db/users');
 const reminderService = require('./reminder');
 const logger = require('../utils/logger');
 
+/**
+ * Resolve the assignee for a scheduled task:
+ * - If target_open_id is set → use it directly
+ * - If target_tag is set → pick the user in that tag group with lowest workload
+ * Returns { openId, name } or null if resolution fails.
+ */
+async function resolveAssignee(st) {
+  if (st.target_open_id) {
+    const user = await usersDb.findByOpenId(st.target_open_id).catch(() => null);
+    return { openId: st.target_open_id, name: user?.name ?? null };
+  }
+  if (st.target_tag) {
+    const user = await usersDb.pickByWorkload(st.target_tag);
+    if (!user?.open_id) {
+      logger.warn('No users found for tag, skipping scheduled task', { id: st.id, tag: st.target_tag });
+      return null;
+    }
+    logger.info('Auto-assigned by workload', {
+      id: st.id, tag: st.target_tag, assignee: user.name, openId: user.open_id,
+    });
+    return { openId: user.open_id, name: user.name ?? null };
+  }
+  logger.warn('Scheduled task has neither target_open_id nor target_tag', { id: st.id });
+  return null;
+}
+
 const jobs = new Map(); // id (string) -> cron.ScheduledTask
 
 async function runJob(st) {
@@ -18,20 +44,21 @@ async function runJob(st) {
   const latest = await scheduledTasksDb.get(st.id);
   if (!latest || !latest.enabled) return;
 
+  // Resolve assignee — either direct open_id or tag-based workload pick
+  const assignee = await resolveAssignee(latest);
+  if (!assignee) return; // logged inside resolveAssignee
+
   // Calculate deadline date
   const deadline = new Date();
   deadline.setDate(deadline.getDate() + latest.deadline_days);
   const deadlineStr = deadline.toISOString().slice(0, 10);
 
-  // Resolve assignee name
-  const targetUser = await usersDb.findByOpenId(latest.target_open_id).catch(() => null);
-
   try {
     await reminderService.createTask({
       title: latest.title,
-      assigneeId: latest.target_open_id,
-      assigneeOpenId: latest.target_open_id,
-      assigneeName: targetUser?.name ?? null,
+      assigneeId: assignee.openId,
+      assigneeOpenId: assignee.openId,
+      assigneeName: assignee.name,
       deadline: deadlineStr,
       note: latest.note ?? null,
       priority: latest.priority,
@@ -45,7 +72,9 @@ async function runJob(st) {
       id: latest.id,
       name: latest.name,
       title: latest.title,
-      assignee: targetUser?.name,
+      assignee: assignee.name,
+      openId: assignee.openId,
+      via: latest.target_tag ? `tag:${latest.target_tag}` : 'direct',
       deadline: deadlineStr,
     });
   } catch (err) {

@@ -146,7 +146,7 @@ router.post('/', async (req, res) => {
 router.patch('/:userId', async (req, res) => {
   try {
     const { userId } = req.params;
-    const { role, configs, name, email, phone } = req.body;
+    const { role, configs, name, email, phone, tags } = req.body;
 
     let user = await users.getById(userId);
     if (!user) return res.status(404).json({ error: 'User not found' });
@@ -156,12 +156,17 @@ router.patch('/:userId', async (req, res) => {
     if (name !== undefined || email !== undefined || phone !== undefined) {
       user = await users.updateProfile(userId, { name, email, phone });
     }
+    if (tags !== undefined) {
+      if (!Array.isArray(tags)) return res.status(400).json({ error: 'tags must be an array' });
+      user = await users.updateTags(userId, tags);
+    }
 
     logger.info('User updated', { userId });
     const changes = {};
     if (role !== undefined) changes.role = role;
     if (configs) changes.configs = configs;
     if (name !== undefined || email !== undefined || phone !== undefined) changes.profile = { name, email, phone };
+    if (tags !== undefined) changes.tags = tags;
     audit.log({ userId: resolveActor(req), action: 'update_user', targetType: 'user', targetId: userId, details: changes }).catch(() => {});
     res.json({ success: true, user: formatUser(user, true) });
   } catch (err) {
@@ -225,6 +230,7 @@ function formatUser(user, withResolved = false) {
     email: user.email,
     phone: user.phone,
     role: user.role,
+    tags: user.tags ?? [],
     configs: user.configs,
     createdAt: user.created_at,
     updatedAt: user.updated_at,

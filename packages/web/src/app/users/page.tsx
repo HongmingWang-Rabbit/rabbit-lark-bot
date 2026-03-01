@@ -203,6 +203,11 @@ function UserRow({
             {!user.email && !user.phone && (
               <span className="text-xs text-gray-400 font-mono truncate">{user.userId}</span>
             )}
+            {(user.tags ?? []).map(tag => (
+              <span key={tag} className="text-xs px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-600 border border-blue-100 font-medium">
+                🏷 {tag}
+              </span>
+            ))}
           </div>
         </div>
 
@@ -406,12 +411,56 @@ function useFocusTrap(ref: RefObject<HTMLElement | null>, onClose: () => void) {
 
 // ── EditUserModal ─────────────────────────────────────────────────────────────
 
+// ── TagChipEditor ─────────────────────────────────────────────────────────────
+
+function TagChipEditor({ tags, onChange }: { tags: string[]; onChange: (t: string[]) => void }) {
+  const [input, setInput] = useState('');
+
+  function addTag() {
+    const val = input.trim().toLowerCase().replace(/\s+/g, '-');
+    if (!val || tags.includes(val)) { setInput(''); return; }
+    onChange([...tags, val]);
+    setInput('');
+  }
+
+  function removeTag(tag: string) {
+    onChange(tags.filter(t => t !== tag));
+  }
+
+  function handleKeyDown(e: React.KeyboardEvent) {
+    if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); addTag(); }
+    if (e.key === 'Backspace' && !input && tags.length) removeTag(tags[tags.length - 1]);
+  }
+
+  return (
+    <div className="flex flex-wrap gap-1.5 p-2 border border-gray-300 rounded-lg min-h-[42px] focus-within:ring-2 focus-within:ring-blue-500 focus-within:border-transparent bg-white">
+      {tags.map(tag => (
+        <span key={tag} className="inline-flex items-center gap-1 px-2 py-0.5 bg-blue-100 text-blue-700 text-xs rounded-full font-medium">
+          {tag}
+          <button type="button" onClick={() => removeTag(tag)} className="text-blue-400 hover:text-blue-700 leading-none">×</button>
+        </span>
+      ))}
+      <input
+        value={input}
+        onChange={e => setInput(e.target.value)}
+        onKeyDown={handleKeyDown}
+        onBlur={addTag}
+        placeholder={tags.length === 0 ? '输入标签，按 Enter 确认…' : ''}
+        className="flex-1 min-w-[120px] outline-none text-sm bg-transparent"
+      />
+    </div>
+  );
+}
+
+// ── EditUserModal ─────────────────────────────────────────────────────────────
+
 function EditUserModal({ user, onClose, onSaved }: { user: User; onClose: () => void; onSaved: () => void }) {
   const [form, setForm] = useState({
     name: user.name ?? '',
     email: user.email ?? '',
     phone: user.phone ?? '',
   });
+  const [tags, setTags] = useState<string[]>(user.tags ?? []);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState('');
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -432,6 +481,7 @@ function EditUserModal({ user, onClose, onSaved }: { user: User; onClose: () => 
         name: form.name.trim() || null,
         email: form.email.trim() || null,
         phone: form.phone.trim() || null,
+        tags,
       });
       onSaved();
     } catch (e: unknown) {
@@ -474,6 +524,15 @@ function EditUserModal({ user, onClose, onSaved }: { user: User; onClose: () => 
               placeholder="+86 138 0000 0000"
             />
           </Field>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              分组标签
+              <span className="ml-1 text-xs text-gray-400 font-normal">（用于按工作量自动分配任务）</span>
+            </label>
+            <TagChipEditor tags={tags} onChange={setTags} />
+            <p className="text-xs text-gray-400 mt-1">例：finance、ops、管理层 — 多个标签用 Enter 分隔</p>
+          </div>
 
           {err && <p className="text-red-500 text-sm">{err}</p>}
 

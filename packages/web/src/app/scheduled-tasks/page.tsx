@@ -1,8 +1,8 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import useSWR, { mutate } from 'swr';
-import { api, SWR_KEYS, ScheduledTask, User } from '@/lib/api';
+import { api, SWR_KEYS, ScheduledTask, User, WorkloadUser } from '@/lib/api';
 import AdminGuard from '@/components/AdminGuard';
 import UserCombobox from '@/components/UserCombobox';
 import FeishuUserLookup from '@/components/FeishuUserLookup';
@@ -30,7 +30,9 @@ const TIMEZONES = ['Asia/Shanghai', 'UTC', 'America/New_York'];
 interface FormState {
   name: string;
   title: string;
+  assignMode: 'direct' | 'tag';   // direct = specific user, tag = auto-assign by workload
   targetOpenId: string;
+  targetTag: string;
   reporterOpenId: string;
   schedulePreset: string;
   schedule: string;
@@ -45,7 +47,9 @@ interface FormState {
 const DEFAULT_FORM: FormState = {
   name: '',
   title: '',
+  assignMode: 'direct',
   targetOpenId: '',
+  targetTag: '',
   reporterOpenId: '',
   schedulePreset: '0 6 * * 1',
   schedule: '0 6 * * 1',
@@ -221,7 +225,9 @@ function ScheduledTaskRow({
     ? new Date(task.last_run_at).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })
     : '—';
 
-  const assigneeName = userMap[task.target_open_id] || task.target_open_id;
+  const assigneeName = task.target_open_id
+    ? (userMap[task.target_open_id] || task.target_open_id)
+    : null;
 
   return (
     <tr className={`hover:bg-gray-50 ${loading ? 'opacity-50' : ''}`}>
@@ -236,14 +242,18 @@ function ScheduledTaskRow({
         )}
       </td>
 
-      {/* 被催办人 — 只显示名字，hover 可看 open_id */}
+      {/* 被催办人 — 名字 or 标签自动分配 */}
       <td className="px-4 py-2 whitespace-nowrap">
-        <span
-          className="text-sm font-medium"
-          title={task.target_open_id}
-        >
-          {assigneeName}
-        </span>
+        {task.target_tag ? (
+          <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 bg-purple-50 text-purple-700 border border-purple-200 rounded-full font-medium">
+            🏷 {task.target_tag}
+            <span className="text-purple-400 font-normal">按工作量</span>
+          </span>
+        ) : (
+          <span className="text-sm font-medium" title={task.target_open_id ?? undefined}>
+            {assigneeName}
+          </span>
+        )}
       </td>
 
       {/* 执行时间 — cron + timezone 同一行 */}
@@ -343,10 +353,13 @@ function ScheduledTaskForm({
 
   const [form, setForm] = useState<FormState>(() => {
     if (!initial) return DEFAULT_FORM;
+    const hasTag = !!initial.target_tag;
     return {
       name: initial.name,
       title: initial.title,
-      targetOpenId: initial.target_open_id,
+      assignMode: hasTag ? 'tag' : 'direct',
+      targetOpenId: initial.target_open_id || '',
+      targetTag: initial.target_tag || '',
       reporterOpenId: initial.reporter_open_id || '',
       schedulePreset: presetForSchedule(initial.schedule),
       schedule: initial.schedule,
@@ -358,6 +371,22 @@ function ScheduledTaskForm({
       enabled: initial.enabled,
     };
   });
+
+  // Fetch workload preview when tag mode is active
+  const [workloadPreview, setWorkloadPreview] = useState<WorkloadUser[]>([]);
+  const [workloadLoading, setWorkloadLoading] = useState(false);
+  useEffect(() => {
+    if (form.assignMode !== 'tag' || !form.targetTag.trim()) {
+      setWorkloadPreview([]);
+      return;
+    }
+    const tag = form.targetTag.trim();
+    setWorkloadLoading(true);
+    api.getWorkload(tag)
+      .then(setWorkloadPreview)
+      .catch(() => setWorkloadPreview([]))
+      .finally(() => setWorkloadLoading(false));
+  }, [form.assignMode, form.targetTag]);
 
   const handlePresetChange = (value: string) => {
     if (value === 'custom') {
@@ -371,7 +400,8 @@ function ScheduledTaskForm({
     e.preventDefault();
     if (!form.name) { setError('请填写任务名称'); return; }
     if (!form.title) { setError('请填写催办标题'); return; }
-    if (!form.targetOpenId) { setError('请选择被催办人'); return; }
+    if (form.assignMode === 'direct' && !form.targetOpenId) { setError('请选择被催办人'); return; }
+    if (form.assignMode === 'tag' && !form.targetTag.trim()) { setError('请输入分配标签'); return; }
     if (!form.schedule) { setError('请设置执行时间'); return; }
     setLoading(true);
     setError(null);
@@ -379,7 +409,8 @@ function ScheduledTaskForm({
       const payload = {
         name: form.name,
         title: form.title,
-        targetOpenId: form.targetOpenId,
+        targetOpenId: form.assignMode === 'direct' ? form.targetOpenId : null,
+        targetTag: form.assignMode === 'tag' ? form.targetTag.trim().toLowerCase() : null,
         reporterOpenId: form.reporterOpenId || null,
         schedule: form.schedule,
         timezone: form.timezone,
@@ -433,24 +464,90 @@ function ScheduledTaskForm({
           />
         </div>
 
-        {/* 被催办人 */}
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">
-            被催办人 <span className="text-red-500">*</span>
+        {/* 分配方式 */}
+        <div className="col-span-2">
+          <label className="block text-sm font-medium text-gray-700 mb-2">
+            分配方式 <span className="text-red-500">*</span>
           </label>
-          <UserCombobox
-            value={form.targetOpenId || null}
-            onChange={v => setForm({ ...form, targetOpenId: v ?? '' })}
-            users={users}
-            placeholder="搜索姓名或邮箱…"
-            required
-          />
-          <FeishuUserLookup
-            onSelect={(openId, name) => {
-              setForm(f => ({ ...f, targetOpenId: openId }));
-              mutate(SWR_KEYS.users); // refresh so UserCombobox shows the provisioned user
-            }}
-          />
+          <div className="flex gap-2 mb-3">
+            <button
+              type="button"
+              onClick={() => setForm(f => ({ ...f, assignMode: 'direct' }))}
+              className={`px-3 py-1.5 text-sm rounded-lg border font-medium transition-colors ${
+                form.assignMode === 'direct'
+                  ? 'bg-blue-500 text-white border-blue-500'
+                  : 'border-gray-300 text-gray-600 hover:bg-gray-50'
+              }`}
+            >
+              👤 指定人员
+            </button>
+            <button
+              type="button"
+              onClick={() => setForm(f => ({ ...f, assignMode: 'tag' }))}
+              className={`px-3 py-1.5 text-sm rounded-lg border font-medium transition-colors ${
+                form.assignMode === 'tag'
+                  ? 'bg-purple-500 text-white border-purple-500'
+                  : 'border-gray-300 text-gray-600 hover:bg-gray-50'
+              }`}
+            >
+              🏷 按标签自动分配（按工作量）
+            </button>
+          </div>
+
+          {form.assignMode === 'direct' ? (
+            <div>
+              <UserCombobox
+                value={form.targetOpenId || null}
+                onChange={v => setForm({ ...form, targetOpenId: v ?? '' })}
+                users={users}
+                placeholder="搜索姓名或邮箱…"
+                required
+              />
+              <FeishuUserLookup
+                onSelect={(openId) => {
+                  setForm(f => ({ ...f, targetOpenId: openId }));
+                  mutate(SWR_KEYS.users);
+                }}
+              />
+            </div>
+          ) : (
+            <div>
+              <input
+                type="text"
+                value={form.targetTag}
+                onChange={e => setForm(f => ({ ...f, targetTag: e.target.value.toLowerCase().trim() }))}
+                placeholder="标签名，例：finance、ops（需先在用户管理中设置）"
+                className="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-purple-500 focus:border-transparent text-sm"
+              />
+              {/* Workload preview */}
+              {form.targetTag.trim() && (
+                <div className="mt-2 p-3 bg-purple-50 rounded-lg border border-purple-100">
+                  <p className="text-xs font-medium text-purple-700 mb-1.5">
+                    🏷 标签「{form.targetTag}」成员工作量预览
+                    {workloadLoading && <span className="ml-2 text-purple-400">加载中…</span>}
+                  </p>
+                  {workloadPreview.length === 0 && !workloadLoading ? (
+                    <p className="text-xs text-gray-400">未找到该标签的成员，请在用户管理中为用户添加标签</p>
+                  ) : (
+                    <div className="flex flex-wrap gap-2">
+                      {workloadPreview.map((u, i) => (
+                        <span key={u.openId ?? u.userId} className={`inline-flex items-center gap-1 text-xs px-2 py-1 rounded-lg ${
+                          i === 0 ? 'bg-green-100 text-green-700 border border-green-200' : 'bg-white text-gray-600 border border-gray-200'
+                        }`}>
+                          {i === 0 && '⚡ '}
+                          {u.name ?? u.userId}
+                          <span className="font-medium">{u.pendingTasks} 任务</span>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  {workloadPreview.length > 0 && (
+                    <p className="text-xs text-purple-500 mt-1.5">⚡ 任务将分配给工作量最少的成员（绿色高亮）</p>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {/* 报告人 */}

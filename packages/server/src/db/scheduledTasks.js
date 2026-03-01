@@ -14,27 +14,29 @@ const scheduledTasksDb = {
     return rows[0] || null;
   },
 
-  async create({ name, title, targetOpenId, reporterOpenId, schedule, timezone, deadlineDays, priority, note, reminderIntervalHours, createdBy }) {
+  async create({ name, title, targetOpenId, targetTag, reporterOpenId, schedule, timezone, deadlineDays, priority, note, reminderIntervalHours, createdBy }) {
     const { rows } = await pool.query(
       `INSERT INTO scheduled_tasks
-         (name, title, target_open_id, reporter_open_id, schedule, timezone,
+         (name, title, target_open_id, target_tag, reporter_open_id, schedule, timezone,
           deadline_days, priority, note, reminder_interval_hours, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
        RETURNING *`,
-      [name, title, targetOpenId, nullIfEmpty(reporterOpenId), schedule,
+      [name, title, nullIfEmpty(targetOpenId), nullIfEmpty(targetTag),
+       nullIfEmpty(reporterOpenId), schedule,
        timezone ?? 'Asia/Shanghai', deadlineDays ?? 1, priority ?? 'p1',
        nullIfEmpty(note), reminderIntervalHours ?? 24, nullIfEmpty(createdBy)]
     );
     return rows[0];
   },
 
-  async update(id, { name, title, targetOpenId, reporterOpenId, schedule, timezone, deadlineDays, priority, note, reminderIntervalHours, enabled }) {
+  async update(id, { name, title, targetOpenId, targetTag, reporterOpenId, schedule, timezone, deadlineDays, priority, note, reminderIntervalHours, enabled }) {
     const fields = [], values = [];
     let i = 1;
     const set = (col, val) => { if (val !== undefined) { fields.push(`${col}=$${i++}`); values.push(val); } };
     set('name', name);
     set('title', title);
-    set('target_open_id', targetOpenId);
+    if (targetOpenId !== undefined) set('target_open_id', nullIfEmpty(targetOpenId));
+    if (targetTag !== undefined) set('target_tag', nullIfEmpty(targetTag));
     // Normalize empty string to NULL for optional text fields
     if (reporterOpenId !== undefined) set('reporter_open_id', nullIfEmpty(reporterOpenId));
     set('schedule', schedule);
