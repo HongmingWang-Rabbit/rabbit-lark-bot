@@ -355,6 +355,30 @@ const users = {
    * @param {string} tag
    * @returns {Promise<object|null>} user row or null
    */
+  /**
+   * Weighted workload score per open_id within a tag group.
+   * Score = SUM(COALESCE(estimated_hours, 1)) of pending tasks.
+   * Tasks without an estimate count as 1 hour each.
+   * @param {string[]} openIds
+   * @returns {Promise<Record<string, number>>}  openId → score
+   */
+  async getWorkloadScore(openIds) {
+    if (!openIds.length) return {};
+    const result = await pool.query(
+      `SELECT assignee_open_id,
+              COALESCE(SUM(COALESCE(estimated_hours, 1)), 0)::float AS score
+       FROM tasks
+       WHERE status = 'pending'
+         AND assignee_open_id = ANY($1)
+       GROUP BY assignee_open_id`,
+      [openIds]
+    );
+    const map = {};
+    for (const id of openIds) map[id] = 0;
+    for (const row of result.rows) map[row.assignee_open_id] = parseFloat(row.score);
+    return map;
+  },
+
   async pickByWorkload(tag) {
     const tagUsers = await users.findByTag(tag);
     if (!tagUsers.length) return null;
@@ -363,7 +387,8 @@ const users = {
     if (!eligible.length) return null;
 
     const openIds = eligible.map(u => u.open_id);
-    const workload = await users.getWorkload(openIds);
+    // Use weighted score (sum of estimated_hours, default 1h per task) for ranking
+    const scores = await users.getWorkloadScore(openIds);
 
     // Fisher-Yates shuffle first so ties are broken randomly but consistently
     for (let i = eligible.length - 1; i > 0; i--) {
@@ -371,8 +396,8 @@ const users = {
       [eligible[i], eligible[j]] = [eligible[j], eligible[i]];
     }
 
-    // Stable sort by workload ascending — ties already randomised by shuffle
-    eligible.sort((a, b) => (workload[a.open_id] ?? 0) - (workload[b.open_id] ?? 0));
+    // Stable sort by weighted score ascending — ties already randomised by shuffle
+    eligible.sort((a, b) => (scores[a.open_id] ?? 0) - (scores[b.open_id] ?? 0));
 
     return eligible[0];
   },

@@ -125,14 +125,16 @@ const TOOLS = [
   },
   {
     name: 'create_task',
-    description: '创建一个催办任务。创建成功后系统会自动通过飞书 DM 通知被催办人，无需再单独发消息。',
+    description: '创建一个催办任务。创建成功后系统会自动通过飞书 DM 通知被催办人，无需再单独发消息。支持直接指定用户（target_open_id）或按标签自动分配工作量最少的用户（target_tag）。',
     input_schema: {
       type: 'object',
       properties: {
-        title:            { type: 'string',  description: '任务标题（简洁描述要完成的事）' },
-        target_open_id:   { type: 'string',  description: '被催办人的 open_id（从注册用户列表取）' },
-        deadline:         { type: 'string',  description: '截止日期 YYYY-MM-DD，从用户话语中提取，今天/明天等要转成具体日期' },
-        note:             { type: 'string',  description: '备注说明，可选' },
+        title:           { type: 'string', description: '任务标题（简洁描述要完成的事）' },
+        target_open_id:  { type: 'string', description: '被催办人的 open_id（从注册用户列表取）。与 target_tag 二选一。' },
+        target_tag:      { type: 'string', description: '按标签自动分配：填标签名（如 finance），系统选工时负担最轻的用户。与 target_open_id 二选一。' },
+        deadline:        { type: 'string', description: '截止日期 YYYY-MM-DD，从用户话语中提取，今天/明天等要转成具体日期' },
+        estimated_hours: { type: 'number', description: '预计工时（小时），用于工作量排序，可选。例：0.5、2、8' },
+        note:            { type: 'string', description: '备注说明，可选' },
         reminder_interval_hours: { type: 'number', description: '提醒间隔小时数，默认 24' },
         priority: {
           type: 'string',
@@ -140,7 +142,7 @@ const TOOLS = [
           description: 'P0=紧急（今天必须完成）, P1=一般（默认）, P2=不紧急',
         },
       },
-      required: ['title', 'target_open_id', 'deadline'],
+      required: ['title', 'deadline'],
     },
   },
   {
@@ -182,24 +184,39 @@ async function executeTool(name, input, { userOpenId, chatId }) {
   }
 
   if (name === 'create_task') {
-    const targetUser = await usersDb.findByOpenId(input.target_open_id);
+    if (!input.target_open_id && !input.target_tag) {
+      return { success: false, message: '必须提供 target_open_id 或 target_tag 其中之一' };
+    }
+
+    let assigneeId, assigneeOpenId, assigneeName;
+    if (input.target_tag) {
+      // Tag-based: let reminder.js resolve via pickByWorkload
+    } else {
+      const targetUser = await usersDb.findByOpenId(input.target_open_id);
+      assigneeId     = input.target_open_id;
+      assigneeOpenId = input.target_open_id;
+      assigneeName   = targetUser?.name || null;
+    }
+
     const result = await reminderService.createTask({
       title: input.title,
-      assigneeId: input.target_open_id,
-      assigneeOpenId: input.target_open_id,
-      assigneeName: targetUser?.name || null,
+      assigneeId, assigneeOpenId, assigneeName,
+      targetTag: input.target_tag || null,
       deadline: input.deadline || null,
       note: input.note || null,
+      estimatedHours: input.estimated_hours ?? null,
       reminderIntervalHours: input.reminder_interval_hours || 24,
       priority: input.priority || 'p1',
       creatorId: userOpenId,
       reporterOpenId: userOpenId,
     });
+
+    const displayName = result?.assignee_name || assigneeName || input.target_open_id || `标签:${input.target_tag}`;
     return {
       success: true,
       task_id: result?.id,
-      assignee_name: targetUser?.name || input.target_open_id,
-      message: `任务已创建，系统已通过飞书 DM 通知 ${targetUser?.name || input.target_open_id}`,
+      assignee_name: displayName,
+      message: `任务已创建，系统已通过飞书 DM 通知 ${displayName}`,
     };
   }
 

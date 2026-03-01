@@ -14,6 +14,8 @@ export interface Task {
   last_reminded_at: string | null;
   proof: string | null;
   note: string | null;
+  estimated_hours: number | null;    // effort estimate — weights workload auto-assignment
+  target_tag: string | null;         // tag used for workload-based auto-assignment
   created_at: string;
   completed_at: string | null;
 }
@@ -42,16 +44,19 @@ export interface WorkloadUser {
   name: string | null;
   tags: string[];
   pendingTasks: number;
+  workloadHours: number;   // SUM(COALESCE(estimated_hours,1)) of pending tasks — used for ranking
 }
 
 export interface CreateTaskParams {
   title: string;
-  targetOpenId: string;              // assignee's open_id (ou_xxx)
+  targetOpenId?: string;             // assignee's open_id (ou_xxx) — required unless targetTag is set
+  targetTag?: string;                // tag for workload-based auto-assignment — alternative to targetOpenId
   reporterOpenId?: string;           // reporter's open_id — notified on completion
   deadline?: string;
   note?: string;
   reminderIntervalHours?: number;
   priority?: 'p0' | 'p1' | 'p2';
+  estimatedHours?: number | null;    // effort estimate in hours — weights workload ranking
 }
 
 export interface Admin {

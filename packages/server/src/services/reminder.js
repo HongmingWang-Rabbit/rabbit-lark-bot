@@ -7,6 +7,7 @@
 
 const pool = require('../db/pool');
 const { audit } = require('../db');
+const usersDb = require('../db/users');
 const feishu = require('../feishu/client');
 const logger = require('../utils/logger');
 
@@ -82,7 +83,16 @@ async function getAllTasks(limit = 100) {
  * @param {number} [params.reminderIntervalHours] - Hours between reminders (0 = disabled, default 24)
  * @param {string} [params.priority]             - Task priority: 'p0', 'p1' (default), 'p2'
  */
-async function createTask({ title, assigneeId, assigneeOpenId, assigneeName, deadline, note, creatorId, reporterOpenId, reminderIntervalHours, priority = 'p1' }) {
+async function createTask({ title, assigneeId, assigneeOpenId, assigneeName, deadline, note, creatorId, reporterOpenId, reminderIntervalHours, priority = 'p1', estimatedHours, targetTag }) {
+  // Tag-based auto-assignment: resolve the user with the lowest weighted workload
+  if (targetTag && !assigneeOpenId) {
+    const picked = await usersDb.pickByWorkload(targetTag);
+    if (!picked) throw new Error(`标签 "${targetTag}" 下没有可用用户，请先在用户管理中配置标签`);
+    assigneeId      = picked.feishu_user_id || picked.open_id;
+    assigneeOpenId  = picked.open_id;
+    assigneeName    = picked.name;
+    logger.info('Tag-based assignee resolved', { tag: targetTag, assignee: assigneeName, openId: assigneeOpenId });
+  }
   let deadlineDate;
   if (deadline) {
     // Strict date validation: accept YYYY-MM-DD or ISO 8601
@@ -108,11 +118,18 @@ async function createTask({ title, assigneeId, assigneeOpenId, assigneeName, dea
 
   const resolvedPriority = ['p0', 'p1', 'p2'].includes(priority) ? priority : 'p1';
 
+  const resolvedEstimatedHours = (estimatedHours != null && !isNaN(Number(estimatedHours)))
+    ? Math.min(999.99, Math.max(0.25, Number(estimatedHours)))
+    : null;
+
   const result = await pool.query(
-    `INSERT INTO tasks (title, assignee_id, assignee_open_id, reporter_open_id, deadline, note, creator_id, reminder_interval_hours, priority)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+    `INSERT INTO tasks
+       (title, assignee_id, assignee_open_id, reporter_open_id, deadline, note,
+        creator_id, reminder_interval_hours, priority, estimated_hours, target_tag)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
      RETURNING *`,
-    [title, assigneeId, assigneeOpenId || null, reporterOpenId || null, deadlineDate, note || null, creatorId || null, intervalHours, resolvedPriority]
+    [title, assigneeId, assigneeOpenId || null, reporterOpenId || null, deadlineDate, note || null,
+     creatorId || null, intervalHours, resolvedPriority, resolvedEstimatedHours, targetTag || null]
   );
   const task = result.rows[0];
 
@@ -144,8 +161,9 @@ async function createTask({ title, assigneeId, assigneeOpenId, assigneeName, dea
     });
   }
 
-  logger.info('Task created', { id: task.id, title, assigneeId });
-  return task;
+  logger.info('Task created', { id: task.id, title, assigneeId, tag: targetTag });
+  // Augment with assignee_name (not stored in DB) for callers like agentForwarder
+  return { ...task, assignee_name: assigneeName || null };
 }
 
 /**

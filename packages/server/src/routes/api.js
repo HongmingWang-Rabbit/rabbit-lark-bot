@@ -66,50 +66,62 @@ router.get('/tasks', async (req, res) => {
   }
 });
 
-// 创建任务（通过邮箱查找被催办人）
+// 创建任务（支持直接指定用户或按标签自动分配）
 router.post('/tasks', async (req, res) => {
   try {
-    const { title, targetOpenId, targetEmail, deadline, note, creatorId, reporterOpenId, reminderIntervalHours, priority } = req.body;
+    const {
+      title, targetOpenId, targetEmail, targetTag,
+      deadline, note, creatorId, reporterOpenId,
+      reminderIntervalHours, priority, estimatedHours,
+    } = req.body;
 
-    if (!title || (!targetOpenId && !targetEmail)) {
-      return res.status(400).json({ error: '任务名称和目标用户必填' });
+    if (!title || (!targetOpenId && !targetEmail && !targetTag)) {
+      return res.status(400).json({ error: '任务名称和分配对象（用户或标签）必填' });
     }
-    if (title.length > 200) {
-      return res.status(400).json({ error: '任务名称不能超过 200 字' });
-    }
-    if (note && note.length > 1000) {
-      return res.status(400).json({ error: '备注不能超过 1000 字' });
-    }
+    if (title.length > 200) return res.status(400).json({ error: '任务名称不能超过 200 字' });
+    if (note && note.length > 1000) return res.status(400).json({ error: '备注不能超过 1000 字' });
 
-    // 查找目标用户：优先 open_id（来自前端 combobox），回退到 email（旧接口兼容）
-    let targetUser = null;
-    if (targetOpenId) {
-      targetUser = await usersDb.findByOpenId(targetOpenId);
-    }
-    if (!targetUser && targetEmail) {
-      targetUser = await usersDb.findByEmail(targetEmail);
-    }
-    if (!targetUser || (!targetUser.feishu_user_id && !targetUser.open_id)) {
-      return res.status(400).json({ error: '找不到该用户，请确认对方已发送过飞书消息' });
-    }
-
-    // reporterOpenId 已直接从前端传入（combobox 选出的 open_id）
     const resolvedReporterOpenId = reporterOpenId || null;
+    const resolvedCreatorId      = creatorId || resolveActor(req);
+    const resolvedInterval       = reminderIntervalHours !== undefined
+      ? Math.min(8760, Math.max(0, Math.floor(Number(reminderIntervalHours) || 0)))
+      : undefined;
 
-    const task = await reminderService.createTask({
-      title,
-      assigneeId: targetUser.feishu_user_id || targetUser.open_id,
-      assigneeOpenId: targetUser.open_id || null,
-      assigneeName: targetUser.name || null,
-      deadline,
-      note,
-      priority: priority || 'p1',
-      creatorId: creatorId || resolveActor(req),
-      reporterOpenId: resolvedReporterOpenId,
-      reminderIntervalHours: reminderIntervalHours !== undefined
-        ? Math.min(8760, Math.max(0, Math.floor(Number(reminderIntervalHours) || 0)))
-        : undefined,
-    });
+    let task;
+
+    if (targetTag) {
+      // Tag-based: reminder.js resolves the lowest-workload user at creation time
+      task = await reminderService.createTask({
+        title, targetTag,
+        deadline, note,
+        priority: priority || 'p1',
+        creatorId: resolvedCreatorId,
+        reporterOpenId: resolvedReporterOpenId,
+        reminderIntervalHours: resolvedInterval,
+        estimatedHours,
+      });
+    } else {
+      // Direct: look up target user by open_id or email
+      let targetUser = null;
+      if (targetOpenId) targetUser = await usersDb.findByOpenId(targetOpenId);
+      if (!targetUser && targetEmail) targetUser = await usersDb.findByEmail(targetEmail);
+      if (!targetUser || (!targetUser.feishu_user_id && !targetUser.open_id)) {
+        return res.status(400).json({ error: '找不到该用户，请确认对方已发送过飞书消息' });
+      }
+
+      task = await reminderService.createTask({
+        title,
+        assigneeId: targetUser.feishu_user_id || targetUser.open_id,
+        assigneeOpenId: targetUser.open_id || null,
+        assigneeName: targetUser.name || null,
+        deadline, note,
+        priority: priority || 'p1',
+        creatorId: resolvedCreatorId,
+        reporterOpenId: resolvedReporterOpenId,
+        reminderIntervalHours: resolvedInterval,
+        estimatedHours,
+      });
+    }
 
     res.json({ success: true, task });
   } catch (err) {
@@ -371,7 +383,7 @@ router.delete('/scheduled-tasks/:id', async (req, res) => {
   }
 });
 
-// GET /api/workload?tag=finance  — returns users in a tag group with pending-task counts
+// GET /api/workload?tag=finance  — returns users in a tag group with pending-task counts + weighted hours
 // GET /api/workload              — returns workload for all users
 router.get('/workload', async (req, res) => {
   try {
@@ -381,7 +393,10 @@ router.get('/workload', async (req, res) => {
       : await usersDb.list();
 
     const openIds = usersList.map(u => u.open_id).filter(Boolean);
-    const workload = await usersDb.getWorkload(openIds);
+    const [workload, scores] = await Promise.all([
+      usersDb.getWorkload(openIds),
+      usersDb.getWorkloadScore(openIds),
+    ]);
 
     const result = usersList.map(u => ({
       userId: u.user_id,
@@ -389,7 +404,8 @@ router.get('/workload', async (req, res) => {
       name: u.name,
       tags: u.tags ?? [],
       pendingTasks: workload[u.open_id] ?? 0,
-    })).sort((a, b) => a.pendingTasks - b.pendingTasks);
+      workloadHours: scores[u.open_id] ?? 0,   // SUM(COALESCE(estimated_hours,1)) of pending tasks
+    })).sort((a, b) => a.workloadHours - b.workloadHours);
 
     res.json({ success: true, tag: tag || null, users: result });
   } catch (err) {

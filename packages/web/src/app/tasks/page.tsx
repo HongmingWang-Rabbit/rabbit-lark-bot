@@ -1,8 +1,8 @@
 'use client';
 
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import useSWR, { mutate } from 'swr';
-import { api, SWR_KEYS, Task, User, CreateTaskParams } from '@/lib/api';
+import { api, SWR_KEYS, Task, User, CreateTaskParams, WorkloadUser } from '@/lib/api';
 import UserCombobox from '@/components/UserCombobox';
 import { LoadingState, ErrorState } from '@/components/StatusStates';
 
@@ -153,6 +153,18 @@ function TaskRow({ task, userMap }: { task: Task; userMap: Map<string, string> }
         <td className="px-4 py-3 font-medium">
           {task.title}
           {task.note && <p className="text-xs text-gray-400 mt-0.5">{task.note}</p>}
+          <div className="flex gap-1.5 mt-0.5 flex-wrap">
+            {task.estimated_hours != null && (
+              <span className="text-xs text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded">
+                ⏱ {task.estimated_hours}h
+              </span>
+            )}
+            {task.target_tag && (
+              <span className="text-xs text-purple-700 bg-purple-50 px-1.5 py-0.5 rounded">
+                #{task.target_tag}
+              </span>
+            )}
+          </div>
         </td>
         <td className="px-4 py-3">
           {(() => {
@@ -271,39 +283,80 @@ function TaskForm({ onSuccess }: { onSuccess: () => void }) {
   const { data: users = [] } = useSWR<User[]>(SWR_KEYS.users, api.getUsers);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
   const [form, setForm] = useState<{
     title: string;
+    assignMode: 'direct' | 'tag';
     targetOpenId: string | null;
+    targetTag: string;
     reporterOpenId: string | null;
     deadline: string;
     note: string;
+    estimatedHours: string;          // kept as string for input binding; parsed on submit
     reminderIntervalHours: number;
     priority: 'p0' | 'p1' | 'p2';
   }>({
     title: '',
+    assignMode: 'direct',
     targetOpenId: null,
+    targetTag: '',
     reporterOpenId: null,
     deadline: '',
     note: '',
+    estimatedHours: '',
     reminderIntervalHours: 24,
     priority: 'p1',
   });
 
+  // Workload preview for tag mode — debounced 400 ms
+  const [tagPreview, setTagPreview] = useState<WorkloadUser[] | null>(null);
+  const [tagPreviewLoading, setTagPreviewLoading] = useState(false);
+  useEffect(() => {
+    if (form.assignMode !== 'tag' || !form.targetTag.trim()) {
+      setTagPreview(null);
+      return;
+    }
+    setTagPreviewLoading(true);
+    const t = setTimeout(async () => {
+      try {
+        const data = await api.getWorkload(form.targetTag.trim());
+        setTagPreview(data);
+      } catch {
+        setTagPreview([]);
+      } finally {
+        setTagPreviewLoading(false);
+      }
+    }, 400);
+    return () => clearTimeout(t);
+  }, [form.assignMode, form.targetTag]);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!form.targetOpenId) { setError('请选择催办对象'); return; }
+    if (form.assignMode === 'direct' && !form.targetOpenId) {
+      setError('请选择催办对象'); return;
+    }
+    if (form.assignMode === 'tag' && !form.targetTag.trim()) {
+      setError('请输入分配标签'); return;
+    }
     setLoading(true);
     setError(null);
     try {
-      await api.createTask({
+      const parsedHours = form.estimatedHours !== '' ? parseFloat(form.estimatedHours) : undefined;
+      const params: CreateTaskParams = {
         title: form.title,
-        targetOpenId: form.targetOpenId,
         reporterOpenId: form.reporterOpenId ?? undefined,
         deadline: form.deadline || undefined,
         note: form.note || undefined,
         reminderIntervalHours: form.reminderIntervalHours,
         priority: form.priority,
-      });
+        estimatedHours: (parsedHours != null && !isNaN(parsedHours)) ? parsedHours : null,
+      };
+      if (form.assignMode === 'tag') {
+        params.targetTag = form.targetTag.trim();
+      } else {
+        params.targetOpenId = form.targetOpenId!;
+      }
+      await api.createTask(params);
       onSuccess();
     } catch (err) {
       setError(err instanceof Error ? err.message : '创建失败');
@@ -312,34 +365,112 @@ function TaskForm({ onSuccess }: { onSuccess: () => void }) {
     }
   };
 
+  const inputCls = 'w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent';
+
   return (
     <form onSubmit={handleSubmit} className="bg-white rounded-lg shadow p-6 mb-6">
       {error && (
         <div className="mb-4 p-3 bg-red-50 text-red-700 rounded-lg text-sm">{error}</div>
       )}
       <div className="grid grid-cols-2 gap-4">
+
+        {/* 任务名称 */}
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">任务名称 *</label>
           <input
             type="text" required
             value={form.title}
             onChange={e => setForm({ ...form, title: e.target.value })}
-            className="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            className={inputCls}
             placeholder="例：提交季度报告"
           />
         </div>
 
+        {/* 催办对象 — 直接指定 or 标签自动分配 */}
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">催办对象 *</label>
-          <UserCombobox
-            users={users}
-            value={form.targetOpenId}
-            onChange={openId => setForm({ ...form, targetOpenId: openId })}
-            placeholder="搜索姓名或邮箱…"
-            required
-          />
+          <label className="block text-sm font-medium text-gray-700 mb-1">
+            催办对象 *
+          </label>
+          {/* Mode toggle */}
+          <div className="flex rounded-lg border border-gray-300 overflow-hidden mb-2 text-sm">
+            <button type="button"
+              onClick={() => setForm({ ...form, assignMode: 'direct' })}
+              className={`flex-1 py-1.5 transition-colors ${
+                form.assignMode === 'direct'
+                  ? 'bg-blue-500 text-white'
+                  : 'bg-white text-gray-600 hover:bg-gray-50'
+              }`}
+            >
+              指定人员
+            </button>
+            <button type="button"
+              onClick={() => setForm({ ...form, assignMode: 'tag' })}
+              className={`flex-1 py-1.5 transition-colors ${
+                form.assignMode === 'tag'
+                  ? 'bg-purple-500 text-white'
+                  : 'bg-white text-gray-600 hover:bg-gray-50'
+              }`}
+            >
+              按标签分配
+            </button>
+          </div>
+
+          {form.assignMode === 'direct' ? (
+            <UserCombobox
+              users={users}
+              value={form.targetOpenId}
+              onChange={openId => setForm({ ...form, targetOpenId: openId })}
+              placeholder="搜索姓名或邮箱…"
+            />
+          ) : (
+            <div>
+              <input
+                type="text"
+                value={form.targetTag}
+                onChange={e => setForm({ ...form, targetTag: e.target.value })}
+                className={inputCls}
+                placeholder="标签名，例：finance"
+              />
+              {/* Workload preview */}
+              {tagPreviewLoading && (
+                <p className="mt-1 text-xs text-gray-400">加载工作量…</p>
+              )}
+              {tagPreview && tagPreview.length === 0 && !tagPreviewLoading && (
+                <p className="mt-1 text-xs text-red-500">⚠️ 该标签下没有用户</p>
+              )}
+              {tagPreview && tagPreview.length > 0 && (
+                <div className="mt-1.5 border rounded-lg overflow-hidden">
+                  <table className="w-full text-xs">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th className="px-2 py-1 text-left text-gray-500 font-medium">姓名</th>
+                        <th className="px-2 py-1 text-right text-gray-500 font-medium">待办</th>
+                        <th className="px-2 py-1 text-right text-gray-500 font-medium">预计工时</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y">
+                      {tagPreview.map((u, i) => (
+                        <tr key={u.userId} className={i === 0 ? 'bg-green-50' : ''}>
+                          <td className="px-2 py-1 font-medium">
+                            {i === 0 && <span className="mr-1">→</span>}
+                            {u.name || u.openId}
+                          </td>
+                          <td className="px-2 py-1 text-right text-gray-600">{u.pendingTasks}</td>
+                          <td className="px-2 py-1 text-right text-gray-600">{u.workloadHours.toFixed(1)} h</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  <p className="px-2 py-1 text-xs text-gray-400 bg-gray-50">
+                    → 将自动分配给工时最少的用户
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
+        {/* 报告对象 */}
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">
             报告对象
@@ -353,33 +484,51 @@ function TaskForm({ onSuccess }: { onSuccess: () => void }) {
           />
         </div>
 
+        {/* 截止时间 */}
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">截止时间</label>
           <input
             type="date"
             value={form.deadline}
             onChange={e => setForm({ ...form, deadline: e.target.value })}
-            className="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            className={inputCls}
           />
         </div>
 
+        {/* 预计工时 */}
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">
+            预计工时（小时）
+            <span className="ml-1 text-gray-400 font-normal text-xs">（用于工作量平衡，可选）</span>
+          </label>
+          <input
+            type="number" min={0.25} max={999} step={0.25}
+            value={form.estimatedHours}
+            onChange={e => setForm({ ...form, estimatedHours: e.target.value })}
+            className={inputCls}
+            placeholder="例：2、0.5、8"
+          />
+        </div>
+
+        {/* 备注 */}
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">备注</label>
           <input
             type="text"
             value={form.note}
             onChange={e => setForm({ ...form, note: e.target.value })}
-            className="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            className={inputCls}
             placeholder="可选说明"
           />
         </div>
 
+        {/* 紧急程度 */}
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">紧急程度</label>
           <select
             value={form.priority}
             onChange={e => setForm({ ...form, priority: e.target.value as 'p0' | 'p1' | 'p2' })}
-            className="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            className={inputCls}
           >
             <option value="p0">🔴 P0 紧急（今天必须完成）</option>
             <option value="p1">🟡 P1 一般（默认）</option>
@@ -387,6 +536,7 @@ function TaskForm({ onSuccess }: { onSuccess: () => void }) {
           </select>
         </div>
 
+        {/* 提醒间隔 */}
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">
             提醒间隔（小时）
@@ -396,7 +546,7 @@ function TaskForm({ onSuccess }: { onSuccess: () => void }) {
             type="number" min={0} max={168}
             value={form.reminderIntervalHours}
             onChange={e => setForm({ ...form, reminderIntervalHours: parseInt(e.target.value, 10) || 0 })}
-            className="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            className={inputCls}
           />
         </div>
       </div>
