@@ -165,17 +165,40 @@ const users = {
   },
 
   /**
-   * Update profile fields (name, email, phone). Only updates fields that are provided.
+   * Update profile fields (name, email, phone).
+   * - undefined  → skip (leave unchanged)
+   * - null / ""  → clear (set DB column to NULL)
+   * - "value"    → set to that value
+   *
+   * This allows the UI to both update and clear fields.
+   * Previously used CASE WHEN IS NOT NULL which prevented clearing values.
    */
   async updateProfile(userId, { name, email, phone }) {
+    const fields = [];
+    const values = [userId];
+    let idx = 2;
+
+    const set = (col, val) => {
+      if (val === undefined) return;
+      // Normalize empty string to NULL so the DB never stores ""
+      fields.push(`${col} = $${idx++}`);
+      values.push(val === '' ? null : val);
+    };
+
+    set('name', name);
+    set('email', email);
+    set('phone', phone);
+
+    if (!fields.length) {
+      // Nothing to update — fetch and return current record unchanged
+      const cur = await pool.query('SELECT * FROM users WHERE user_id = $1', [userId]);
+      if (!cur.rows[0]) throw new Error('User not found');
+      return cur.rows[0];
+    }
+
     const result = await pool.query(
-      `UPDATE users SET
-         name  = CASE WHEN $2::varchar IS NOT NULL THEN $2 ELSE name END,
-         email = CASE WHEN $3::varchar IS NOT NULL THEN $3 ELSE email END,
-         phone = CASE WHEN $4::varchar IS NOT NULL THEN $4 ELSE phone END
-       WHERE user_id = $1
-       RETURNING *`,
-      [userId, name ?? null, email ?? null, phone ?? null]
+      `UPDATE users SET ${fields.join(', ')} WHERE user_id = $1 RETURNING *`,
+      values
     );
     if (!result.rows[0]) throw new Error('User not found');
     return result.rows[0];

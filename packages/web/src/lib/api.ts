@@ -83,6 +83,7 @@ export interface User {
   phone: string | null;
   role: UserRole;
   tags: string[];
+  avatarUrl: string | null;
   configs: { features?: Record<string, boolean> };
   resolvedFeatures?: Record<string, boolean>;
   createdAt: string;

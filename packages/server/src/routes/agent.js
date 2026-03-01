@@ -22,9 +22,10 @@ const { safeErrorMessage } = require('../utils/safeError');
  */
 function detectIdType(id) {
   if (!id) throw new Error('ID is required');
-  if (id.startsWith('oc_')) return 'chat_id';  // 群聊 ID
-  if (id.startsWith('ou_')) return 'open_id';  // open_id
-  return 'user_id';  // 默认 user_id
+  if (id.startsWith('oc_')) return 'chat_id';   // group chat
+  if (id.startsWith('ou_')) return 'open_id';   // open_id (per-app user ID)
+  if (id.startsWith('on_')) return 'union_id';  // union_id (cross-app user ID)
+  return 'user_id';                             // numeric/email user_id
 }
 
 /**

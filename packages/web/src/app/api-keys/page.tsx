@@ -150,52 +150,84 @@ function CreateKeyForm() {
 
 function KeyRow({ apiKey }: { apiKey: AgentApiKey }) {
   const [revoking, setRevoking] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const [revokeError, setRevokeError] = useState<string | null>(null);
 
   const isRevoked = !!apiKey.revoked_at;
 
   async function handleRevoke() {
-    if (!confirm(`确认撤销 Key "${apiKey.name}"？此操作不可恢复。`)) return;
-
     setRevoking(true);
+    setRevokeError(null);
     try {
       await api.revokeApiKey(apiKey.id);
       mutate(SWR_KEYS.apiKeys);
-    } catch {
-      alert('撤销失败，请重试');
+    } catch (err) {
+      setRevokeError(err instanceof Error ? err.message : '撤销失败，请重试');
+      setConfirming(false);
     } finally {
       setRevoking(false);
     }
   }
 
   return (
-    <tr className={`border-b last:border-0 ${isRevoked ? 'opacity-50' : ''}`}>
-      <td className="px-4 py-3 font-medium">{apiKey.name}</td>
-      <td className="px-4 py-3 font-mono text-gray-500">{apiKey.key_prefix}...</td>
-      <td className="px-4 py-3 text-gray-600">{apiKey.created_by}</td>
-      <td className="px-4 py-3 text-gray-500">{new Date(apiKey.created_at).toLocaleDateString()}</td>
-      <td className="px-4 py-3 text-gray-500">
-        {apiKey.last_used_at ? new Date(apiKey.last_used_at).toLocaleDateString() : '—'}
-      </td>
-      <td className="px-4 py-3">
-        {isRevoked ? (
-          <span className="text-red-500 text-xs font-medium">已撤销</span>
-        ) : (
-          <span className="text-green-600 text-xs font-medium">有效</span>
-        )}
-      </td>
-      <td className="px-4 py-3">
-        {!isRevoked && (
-          <button
-            onClick={handleRevoke}
-            disabled={revoking}
-            aria-label={`撤销 ${apiKey.name}`}
-            className="text-red-500 hover:text-red-700 text-sm disabled:opacity-50"
-          >
-            {revoking ? '撤销中...' : '撤销'}
-          </button>
-        )}
-      </td>
-    </tr>
+    <>
+      <tr className={`border-b ${isRevoked ? 'opacity-50' : ''}`}>
+        <td className="px-4 py-3 font-medium">{apiKey.name}</td>
+        <td className="px-4 py-3 font-mono text-gray-500">{apiKey.key_prefix}...</td>
+        <td className="px-4 py-3 text-gray-600">{apiKey.created_by}</td>
+        <td className="px-4 py-3 text-gray-500">{new Date(apiKey.created_at).toLocaleDateString()}</td>
+        <td className="px-4 py-3 text-gray-500">
+          {apiKey.last_used_at ? new Date(apiKey.last_used_at).toLocaleDateString() : '—'}
+        </td>
+        <td className="px-4 py-3">
+          {isRevoked ? (
+            <span className="text-red-500 text-xs font-medium">已撤销</span>
+          ) : (
+            <span className="text-green-600 text-xs font-medium">有效</span>
+          )}
+        </td>
+        <td className="px-4 py-3">
+          {!isRevoked && (
+            confirming ? (
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleRevoke}
+                  disabled={revoking}
+                  className="text-xs font-medium px-2 py-0.5 rounded bg-red-100 text-red-700 disabled:opacity-50"
+                >
+                  {revoking ? '撤销中…' : '确认'}
+                </button>
+                <button
+                  onClick={() => setConfirming(false)}
+                  disabled={revoking}
+                  className="text-xs text-gray-400 hover:text-gray-600"
+                >
+                  取消
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={() => setConfirming(true)}
+                aria-label={`撤销 ${apiKey.name}`}
+                className="text-red-500 hover:text-red-700 text-sm"
+              >
+                撤销
+              </button>
+            )
+          )}
+        </td>
+      </tr>
+      {revokeError && (
+        <tr>
+          <td colSpan={7} className="px-4 py-2">
+            <div className="flex items-center gap-2 text-sm text-red-600 bg-red-50 rounded px-3 py-1.5">
+              <span>{revokeError}</span>
+              <button onClick={() => setRevokeError(null)} className="ml-auto text-red-400 hover:text-red-600">×</button>
+            </div>
+          </td>
+        </tr>
+      )}
+    </>
   );
 }
 

@@ -27,8 +27,8 @@ const MENU_SECTIONS = [
       },
       {
         feature: 'cuiban_create',
-        command: '/add 任务名 @用户 截止日期',
-        desc: '创建新的催办任务并分配给他人',
+        command: '/add 任务名 邮箱 [YYYY-MM-DD]',
+        desc: '创建催办任务并分配给他人，例：/add 提交报告 user@company.com 2026-03-15',
       },
     ],
   },

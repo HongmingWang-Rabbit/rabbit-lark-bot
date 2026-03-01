@@ -142,20 +142,22 @@ function SettingRow({ setting }: { setting: Setting }) {
 }
 
 function SystemInfo() {
+  // Only NEXT_PUBLIC_* vars are available in the browser bundle.
+  // FEISHU_APP_ID is server-only — do not reference it here.
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL || '/api';
+
   return (
     <div className="mt-8 bg-white rounded-lg shadow p-6">
       <h3 className="text-lg font-semibold mb-4">系统信息</h3>
       <div className="grid grid-cols-2 gap-4 text-sm">
         <div>
-          <span className="text-gray-500">飞书 App ID:</span>
-          <span className="ml-2 font-mono">
-            {process.env.NEXT_PUBLIC_FEISHU_APP_ID || '***'}
-          </span>
+          <span className="text-gray-500">API 地址:</span>
+          <span className="ml-2 font-mono">{apiUrl}</span>
         </div>
         <div>
-          <span className="text-gray-500">API 地址:</span>
+          <span className="text-gray-500">环境:</span>
           <span className="ml-2 font-mono">
-            {process.env.NEXT_PUBLIC_API_URL || '/api'}
+            {process.env.NODE_ENV || 'production'}
           </span>
         </div>
       </div>

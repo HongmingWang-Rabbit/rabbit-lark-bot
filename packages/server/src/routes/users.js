@@ -231,6 +231,7 @@ function formatUser(user, withResolved = false) {
     phone: user.phone,
     role: user.role,
     tags: user.tags ?? [],
+    avatarUrl: user.avatar_url ?? null,
     configs: user.configs,
     createdAt: user.created_at,
     updatedAt: user.updated_at,
