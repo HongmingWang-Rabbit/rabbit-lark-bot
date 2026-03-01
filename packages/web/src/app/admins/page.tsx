@@ -3,8 +3,9 @@
 import { useState } from 'react';
 import useSWR, { mutate } from 'swr';
 import { api, Admin, AddAdminParams } from '@/lib/api';
+import AdminGuard from '@/components/AdminGuard';
 
-export default function AdminsPage() {
+function AdminsPage() {
   const { data: admins, error, isLoading } = useSWR<Admin[]>('/admins', api.getAdmins);
   const [showForm, setShowForm] = useState(false);
 
@@ -91,48 +92,63 @@ function AdminTable({ admins }: { admins: Admin[] }) {
 
 function AdminRow({ admin }: { admin: Admin }) {
   const [loading, setLoading] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const handleRemove = async () => {
-    if (!admin.user_id) {
-      alert('无法删除：缺少 user_id');
-      return;
-    }
-    if (!confirm('确认移除此管理员？')) return;
-
+    if (!admin.user_id) { setError('无法删除：缺少 user_id'); return; }
     setLoading(true);
+    setError(null);
     try {
       await api.removeAdmin(admin.user_id);
       mutate('/admins');
     } catch (err) {
-      alert(err instanceof Error ? err.message : '操作失败');
+      setError(err instanceof Error ? err.message : '操作失败');
+      setConfirming(false);
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <tr className={`hover:bg-gray-50 ${loading ? 'opacity-50' : ''}`}>
-      <td className="px-4 py-3 font-medium">{admin.name || '-'}</td>
-      <td className="px-4 py-3 text-gray-600">{admin.email || '-'}</td>
-      <td className="px-4 py-3 text-sm text-gray-500 font-mono">
-        {admin.user_id ? `${admin.user_id.slice(0, 12)}...` : '-'}
-      </td>
-      <td className="px-4 py-3">
-        <RoleBadge role={admin.role} />
-      </td>
-      <td className="px-4 py-3 text-sm text-gray-500">
-        {new Date(admin.created_at).toLocaleDateString('zh-CN')}
-      </td>
-      <td className="px-4 py-3">
-        <button
-          onClick={handleRemove}
-          disabled={loading}
-          className="text-red-600 hover:text-red-800 disabled:opacity-50"
-        >
-          移除
-        </button>
-      </td>
-    </tr>
+    <>
+      <tr className={`hover:bg-gray-50 ${loading ? 'opacity-50' : ''}`}>
+        <td className="px-4 py-3 font-medium">{admin.name || '-'}</td>
+        <td className="px-4 py-3 text-gray-600">{admin.email || '-'}</td>
+        <td className="px-4 py-3 text-sm text-gray-500 font-mono">
+          {admin.user_id ? `${admin.user_id.slice(0, 12)}...` : '-'}
+        </td>
+        <td className="px-4 py-3"><RoleBadge role={admin.role} /></td>
+        <td className="px-4 py-3 text-sm text-gray-500">
+          {new Date(admin.created_at).toLocaleDateString('zh-CN')}
+        </td>
+        <td className="px-4 py-3">
+          {confirming ? (
+            <div className="flex items-center gap-2">
+              <button onClick={handleRemove} disabled={loading}
+                className="text-xs font-medium px-2 py-0.5 rounded bg-red-100 text-red-700 disabled:opacity-50">
+                {loading ? '移除中…' : '确认'}
+              </button>
+              <button onClick={() => setConfirming(false)} disabled={loading}
+                className="text-xs text-gray-400 hover:text-gray-600">取消</button>
+            </div>
+          ) : (
+            <button onClick={() => setConfirming(true)}
+              className="text-red-600 hover:text-red-800 text-sm">移除</button>
+          )}
+        </td>
+      </tr>
+      {error && (
+        <tr>
+          <td colSpan={6} className="px-4 py-2">
+            <div className="flex items-center gap-2 text-sm text-red-600 bg-red-50 rounded px-3 py-1.5">
+              <span>{error}</span>
+              <button onClick={() => setError(null)} className="ml-auto text-red-400 hover:text-red-600">×</button>
+            </div>
+          </td>
+        </tr>
+      )}
+    </>
   );
 }
 
@@ -147,6 +163,10 @@ function RoleBadge({ role }: { role: Admin['role'] }) {
       {role}
     </span>
   );
+}
+
+export default function AdminsPageGuarded() {
+  return <AdminGuard><AdminsPage /></AdminGuard>;
 }
 
 function AdminForm({ onSuccess }: { onSuccess: () => void }) {

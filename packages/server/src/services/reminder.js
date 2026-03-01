@@ -126,7 +126,7 @@ async function createTask({ title, assigneeId, assigneeOpenId, assigneeName, dea
         targetId: String(task.id),
         details: { title, assigneeId, deadline },
       })
-      .catch(() => {});
+      .catch(err => logger.warn('audit.log failed', { error: err.message }));
   }
 
   // Notify assignee via direct Feishu message
@@ -180,7 +180,7 @@ async function completeTask(taskId, proof, userId, completerName) {
         targetId: String(taskId),
         details: { proof },
       })
-      .catch(() => {});
+      .catch(err => logger.warn('audit.log failed', { error: err.message }));
   }
 
   // Notify reporter (task creator) that the task is done
@@ -234,7 +234,7 @@ async function deleteTask(taskId, userId) {
         targetId: String(taskId),
         details: {},
       })
-      .catch(() => {});
+      .catch(err => logger.warn('audit.log failed', { error: err.message }));
   }
 
   logger.info('Task deleted', { id: taskId });

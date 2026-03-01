@@ -9,6 +9,7 @@ const feishu = require('../feishu/client');
 const scheduledTasksDb = require('../db/scheduledTasks');
 const { reload: reloadScheduler } = require('../services/scheduledTaskRunner');
 const { safeErrorMessage } = require('../utils/safeError');
+const logger = require('../utils/logger');
 
 // Resolve a stable actor identifier for audit logs from web/API requests.
 // Prefers the authenticated session user (req.user.sub from JWT) over
@@ -172,7 +173,7 @@ router.post('/admins', async (req, res) => {
       targetType: 'admin',
       targetId: userId || email,
       details: { email, name, role },
-    }).catch(() => {});
+    }).catch(err => logger.warn('audit.log failed', { error: err.message }));
     res.json(admin);
   } catch (err) {
     res.status(500).json({ error: safeErrorMessage(err) });
@@ -189,7 +190,7 @@ router.delete('/admins/:userId', async (req, res) => {
       targetType: 'admin',
       targetId: req.params.userId,
       details: { removed: removed?.email || null },
-    }).catch(() => {});
+    }).catch(err => logger.warn('audit.log failed', { error: err.message }));
     res.json({ success: true, removed });
   } catch (err) {
     res.status(500).json({ error: safeErrorMessage(err) });
@@ -228,7 +229,7 @@ router.put('/settings/:key', async (req, res) => {
       targetType: 'setting',
       targetId: key,
       details: { value },
-    }).catch(() => {});
+    }).catch(err => logger.warn('audit.log failed', { error: err.message }));
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: safeErrorMessage(err) });

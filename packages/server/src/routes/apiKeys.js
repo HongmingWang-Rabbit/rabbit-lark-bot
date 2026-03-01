@@ -57,7 +57,7 @@ router.post('/', async (req, res) => {
       targetType: 'api_key',
       targetId: String(row.id),
       details: { name: name.trim(), keyPrefix },
-    }).catch(() => {});
+    }).catch(err => logger.warn('audit.log failed', { error: err.message }));
 
     logger.info('API key created', { id: row.id, name: name.trim(), createdBy });
 
@@ -90,7 +90,7 @@ router.delete('/:id', async (req, res) => {
       targetType: 'api_key',
       targetId: String(id),
       details: { name: revoked.name, keyPrefix: revoked.key_prefix },
-    }).catch(() => {});
+    }).catch(err => logger.warn('audit.log failed', { error: err.message }));
 
     logger.info('API key revoked', { id, name: revoked.name, actor });
 

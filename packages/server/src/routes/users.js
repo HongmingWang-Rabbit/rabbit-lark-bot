@@ -19,7 +19,9 @@ const logger = require('../utils/logger');
 const { safeErrorMessage } = require('../utils/safeError');
 
 function resolveActor(req) {
-  return req.body?.actorId || req.query?.actorId || 'web_admin';
+  // Prefer the verified JWT identity (req.user.sub) so API clients cannot
+  // impersonate arbitrary actors by setting actorId in the request body.
+  return req.user?.sub || req.body?.actorId || req.query?.actorId || 'web_admin';
 }
 
 // ── List available features (must be before /:userId routes) ───────────────
@@ -123,6 +125,9 @@ router.get('/:userId', async (req, res) => {
 
 const VALID_ROLES = ['superadmin', 'admin', 'user'];
 
+// Ordinal used to detect self-demotion attempts
+const ROLE_RANK = { superadmin: 2, admin: 1, user: 0 };
+
 router.post('/', async (req, res) => {
   try {
     const { userId, openId, name, email, phone, role, configs } = req.body;
@@ -133,7 +138,7 @@ router.post('/', async (req, res) => {
 
     const user = await users.upsert({ userId, openId, name, email, phone, role, configs });
     logger.info('User upserted', { userId, role: user.role });
-    audit.log({ userId: resolveActor(req), action: 'upsert_user', targetType: 'user', targetId: userId, details: { role } }).catch(() => {});
+    audit.log({ userId: resolveActor(req), action: 'upsert_user', targetType: 'user', targetId: userId, details: { role } }).catch(err => logger.warn('audit.log failed', { error: err.message }));
     res.json({ success: true, user: formatUser(user, true) });
   } catch (err) {
     logger.error('Upsert user failed', { error: err.message });
@@ -151,7 +156,20 @@ router.patch('/:userId', async (req, res) => {
     let user = await users.getById(userId);
     if (!user) return res.status(404).json({ error: 'User not found' });
 
-    if (role !== undefined) user = await users.setRole(userId, role);
+    if (role !== undefined) {
+      if (!VALID_ROLES.includes(role)) {
+        return res.status(400).json({ error: `Invalid role: ${role}. Must be one of: ${VALID_ROLES.join(', ')}` });
+      }
+      // Self-demotion guard: prevent an admin from demoting their own account,
+      // which could accidentally revoke their own access to the admin panel.
+      const actor = resolveActor(req);
+      if (actor === userId && (ROLE_RANK[role] ?? 0) < (ROLE_RANK[user.role] ?? 0)) {
+        return res.status(400).json({
+          error: 'Cannot demote your own account — ask another superadmin to change your role',
+        });
+      }
+      user = await users.setRole(userId, role);
+    }
     if (configs) user = await users.updateConfigs(userId, configs);
     if (name !== undefined || email !== undefined || phone !== undefined) {
       user = await users.updateProfile(userId, { name, email, phone });
@@ -167,7 +185,7 @@ router.patch('/:userId', async (req, res) => {
     if (configs) changes.configs = configs;
     if (name !== undefined || email !== undefined || phone !== undefined) changes.profile = { name, email, phone };
     if (tags !== undefined) changes.tags = tags;
-    audit.log({ userId: resolveActor(req), action: 'update_user', targetType: 'user', targetId: userId, details: changes }).catch(() => {});
+    audit.log({ userId: resolveActor(req), action: 'update_user', targetType: 'user', targetId: userId, details: changes }).catch(err => logger.warn('audit.log failed', { error: err.message }));
     res.json({ success: true, user: formatUser(user, true) });
   } catch (err) {
     logger.error('Update user failed', { error: err.message });
@@ -191,7 +209,7 @@ router.patch('/:userId/features/:featureId', async (req, res) => {
 
     const user = await users.setFeature(userId, featureId, enabled);
     logger.info('Feature updated', { userId, featureId, enabled });
-    audit.log({ userId: resolveActor(req), action: 'set_feature', targetType: 'user', targetId: userId, details: { featureId, enabled } }).catch(() => {});
+    audit.log({ userId: resolveActor(req), action: 'set_feature', targetType: 'user', targetId: userId, details: { featureId, enabled } }).catch(err => logger.warn('audit.log failed', { error: err.message }));
     res.json({ success: true, user: formatUser(user, true) });
   } catch (err) {
     logger.error('Set feature failed', { error: err.message });
@@ -206,7 +224,7 @@ router.delete('/:userId', async (req, res) => {
     const removed = await users.remove(req.params.userId);
     if (!removed) return res.status(404).json({ error: 'User not found' });
     logger.info('User removed', { userId: req.params.userId });
-    audit.log({ userId: resolveActor(req), action: 'remove_user', targetType: 'user', targetId: req.params.userId, details: {} }).catch(() => {});
+    audit.log({ userId: resolveActor(req), action: 'remove_user', targetType: 'user', targetId: req.params.userId, details: {} }).catch(err => logger.warn('audit.log failed', { error: err.message }));
     res.json({ success: true });
   } catch (err) {
     logger.error('Remove user failed', { error: err.message });

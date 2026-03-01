@@ -55,11 +55,18 @@ function StatCard({ title, value, color }: StatCardProps) {
 }
 
 const ACTION_LABELS: Record<string, string> = {
-  create_task: '创建任务',
-  complete_task: '完成任务',
-  delete_task: '删除任务',
-  add_admin: '添加管理员',
-  remove_admin: '移除管理员',
+  create_task:    '创建任务',
+  complete_task:  '完成任务',
+  delete_task:    '删除任务',
+  add_admin:      '添加管理员',
+  remove_admin:   '移除管理员',
+  upsert_user:    '创建/更新用户',
+  update_user:    '修改用户',
+  remove_user:    '删除用户',
+  set_feature:    '功能权限变更',
+  update_setting: '修改系统设置',
+  revoke_api_key: '撤销 API Key',
+  create_api_key: '创建 API Key',
 };
 
 function RecentActivity({ logs }: { logs: AuditLog[] }) {
