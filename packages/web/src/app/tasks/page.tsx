@@ -284,6 +284,13 @@ function TaskForm({ onSuccess }: { onSuccess: () => void }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Collect all unique tags from all users (sorted)
+  const availableTags = useMemo(() => {
+    const set = new Set<string>();
+    users.forEach(u => (u.tags ?? []).forEach(t => set.add(t)));
+    return Array.from(set).sort();
+  }, [users]);
+
   const [form, setForm] = useState<{
     title: string;
     assignMode: 'direct' | 'tag';
@@ -308,26 +315,24 @@ function TaskForm({ onSuccess }: { onSuccess: () => void }) {
     priority: 'p1',
   });
 
-  // Workload preview for tag mode — debounced 400 ms
+  // Workload preview for tag mode — fires immediately on tag select
   const [tagPreview, setTagPreview] = useState<WorkloadUser[] | null>(null);
   const [tagPreviewLoading, setTagPreviewLoading] = useState(false);
   useEffect(() => {
-    if (form.assignMode !== 'tag' || !form.targetTag.trim()) {
+    if (form.assignMode !== 'tag' || !form.targetTag) {
       setTagPreview(null);
       return;
     }
+    let cancelled = false;
     setTagPreviewLoading(true);
-    const t = setTimeout(async () => {
-      try {
-        const data = await api.getWorkload(form.targetTag.trim());
-        setTagPreview(data);
-      } catch {
-        setTagPreview([]);
-      } finally {
-        setTagPreviewLoading(false);
-      }
-    }, 400);
-    return () => clearTimeout(t);
+    api.getWorkload(form.targetTag).then(data => {
+      if (!cancelled) setTagPreview(data);
+    }).catch(() => {
+      if (!cancelled) setTagPreview([]);
+    }).finally(() => {
+      if (!cancelled) setTagPreviewLoading(false);
+    });
+    return () => { cancelled = true; };
   }, [form.assignMode, form.targetTag]);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -335,8 +340,8 @@ function TaskForm({ onSuccess }: { onSuccess: () => void }) {
     if (form.assignMode === 'direct' && !form.targetOpenId) {
       setError('请选择催办对象'); return;
     }
-    if (form.assignMode === 'tag' && !form.targetTag.trim()) {
-      setError('请输入分配标签'); return;
+    if (form.assignMode === 'tag' && !form.targetTag) {
+      setError('请选择分配标签'); return;
     }
     setLoading(true);
     setError(null);
@@ -352,7 +357,7 @@ function TaskForm({ onSuccess }: { onSuccess: () => void }) {
         estimatedHours: (parsedHours != null && !isNaN(parsedHours)) ? parsedHours : null,
       };
       if (form.assignMode === 'tag') {
-        params.targetTag = form.targetTag.trim();
+        params.targetTag = form.targetTag;
       } else {
         params.targetOpenId = form.targetOpenId!;
       }
@@ -424,13 +429,19 @@ function TaskForm({ onSuccess }: { onSuccess: () => void }) {
             />
           ) : (
             <div>
-              <input
-                type="text"
+              <select
                 value={form.targetTag}
                 onChange={e => setForm({ ...form, targetTag: e.target.value })}
                 className={inputCls}
-                placeholder="标签名，例：finance"
-              />
+              >
+                <option value="">— 选择标签 —</option>
+                {availableTags.map(tag => (
+                  <option key={tag} value={tag}>{tag}</option>
+                ))}
+              </select>
+              {availableTags.length === 0 && (
+                <p className="mt-1 text-xs text-gray-400">暂无标签，请先在用户管理中为用户添加标签</p>
+              )}
               {/* Workload preview */}
               {tagPreviewLoading && (
                 <p className="mt-1 text-xs text-gray-400">加载工作量…</p>
