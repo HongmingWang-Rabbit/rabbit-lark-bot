@@ -249,6 +249,7 @@ function ScheduledTaskTable({
             <th className="px-4 py-3 text-left text-sm font-medium text-gray-500 whitespace-nowrap w-32">被催办人</th>
             <th className="px-4 py-3 text-left text-sm font-medium text-gray-500 whitespace-nowrap w-44">执行时间</th>
             <th className="px-4 py-3 text-left text-sm font-medium text-gray-500 whitespace-nowrap w-20">优先级</th>
+            <th className="px-4 py-3 text-left text-sm font-medium text-gray-500 whitespace-nowrap w-20">截止天数</th>
             <th className="px-4 py-3 text-left text-sm font-medium text-gray-500 whitespace-nowrap w-16">状态</th>
             <th className="px-4 py-3 text-left text-sm font-medium text-gray-500 whitespace-nowrap w-28">上次执行</th>
             <th className="px-4 py-3 text-left text-sm font-medium text-gray-500 whitespace-nowrap w-20">操作</th>
@@ -260,7 +261,7 @@ function ScheduledTaskTable({
           ))}
           {tasks.length === 0 && (
             <tr>
-              <td colSpan={8} className="px-4 py-8 text-center text-gray-400">
+              <td colSpan={9} className="px-4 py-8 text-center text-gray-400">
                 {emptyMessage ?? '暂无定时任务'}
               </td>
             </tr>
@@ -358,6 +359,13 @@ function ScheduledTaskRow({
         <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${badge.className}`}>
           {badge.label}
         </span>
+      </td>
+
+      {/* 截止天数 */}
+      <td className="px-4 py-2 whitespace-nowrap text-sm text-gray-600">
+        {task.deadline_days === 0
+          ? <span className="text-xs text-gray-400">当天</span>
+          : <span>{task.deadline_days} 天</span>}
       </td>
 
       {/* 状态 */}
