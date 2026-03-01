@@ -46,12 +46,23 @@ function getClient() {
 let _activeAgents = 0;
 const _waitQueue = [];
 
+const SLOT_TIMEOUT_MS = 30_000; // 30s max wait for a concurrency slot
+
 function acquireSlot() {
   if (_activeAgents < MAX_CONCURRENT_AGENTS) {
     _activeAgents++;
     return Promise.resolve();
   }
-  return new Promise((resolve) => _waitQueue.push(resolve));
+  // Queue the caller, but reject after SLOT_TIMEOUT_MS so users aren't left
+  // waiting forever when all slots are held by slow/hung Anthropic calls.
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      const idx = _waitQueue.indexOf(resolve);
+      if (idx !== -1) _waitQueue.splice(idx, 1);
+      reject(new Error('Agent concurrency timeout — please try again'));
+    }, SLOT_TIMEOUT_MS);
+    _waitQueue.push(() => { clearTimeout(timer); resolve(); });
+  });
 }
 
 function releaseSlot() {
@@ -155,7 +166,10 @@ async function executeTool(name, input, { userOpenId, chatId }) {
 
   if (name === 'list_tasks') {
     const oid = input.open_id || userOpenId;
-    const tasks = await reminderService.getUserPendingTasks(oid, oid);
+    // First arg is feishuUserId (on_xxx); second is openId (ou_xxx).
+    // oid is always an open_id (ou_xxx), so pass null for feishuUserId to
+    // avoid matching unrelated records stored under assignee_id with ou_ prefix.
+    const tasks = await reminderService.getUserPendingTasks(null, oid);
     if (!tasks.length) return { tasks: [], message: '没有待办任务' };
     return {
       tasks: tasks.map(t => ({
@@ -326,7 +340,9 @@ async function forwardToOwnerAgent(event, apiBaseUrl, userContext = null) {
 
   // Append current user message
   const userMsg = { role: 'user', content: text };
-  await appendHistory(chatId, 'user', text).catch(() => {});
+  await appendHistory(chatId, 'user', text).catch(err =>
+    logger.warn('appendHistory(user) failed', { chatId, error: err.message })
+  );
 
   const messages = [...history, userMsg];
 
@@ -396,7 +412,9 @@ async function forwardToOwnerAgent(event, apiBaseUrl, userContext = null) {
     if (finalText) {
       try {
         await feishu.sendMessage(chatId, finalText, 'chat_id');
-        await appendHistory(chatId, 'assistant', finalText).catch(() => {});
+        await appendHistory(chatId, 'assistant', finalText).catch(err =>
+      logger.warn('appendHistory(assistant) failed', { chatId, error: err.message })
+    );
       } catch (err) {
         logger.error('Failed to send reply', { error: err.message });
       }

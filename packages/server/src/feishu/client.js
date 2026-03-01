@@ -65,9 +65,13 @@ async function getToken() {
 
       // Refresh 60s before real expiry to avoid races; floor at 300s (5 min)
       // in case Feishu returns a very short TTL.
+      // Guard: data.expire may be undefined/null if Feishu changes response shape.
+      // undefined - 60 = NaN; Math.max(NaN, 300) = NaN; Date.now() + NaN = NaN.
+      // NaN expiry → every getToken() call retries, causing a token-refresh storm.
+      const expireSecs = Number(data.expire) || 7200; // fallback 2h
       tokenCache = {
         token: data.tenant_access_token,
-        expiresAt: Date.now() + Math.max(data.expire - 60, 300) * 1000,
+        expiresAt: Date.now() + Math.max(expireSecs - 60, 300) * 1000,
       };
 
       logger.debug('Feishu token refreshed', { expiresIn: data.expire });

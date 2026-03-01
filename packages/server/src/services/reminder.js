@@ -99,8 +99,11 @@ async function createTask({ title, assigneeId, assigneeOpenId, assigneeName, dea
     deadlineDate = new Date(Date.now() + DEFAULT_DEADLINE_DAYS * MS_PER_DAY);
   }
 
-  const intervalHours = (reminderIntervalHours !== undefined && reminderIntervalHours !== null)
-    ? parseInt(reminderIntervalHours, 10)
+  const _parsed = parseInt(reminderIntervalHours, 10);
+  // Guard: parseInt returns NaN for non-numeric strings; NaN stored in DB means
+  // reminder_interval_hours > 0 never matches and reminders are silently disabled.
+  const intervalHours = (reminderIntervalHours !== undefined && reminderIntervalHours !== null && !isNaN(_parsed))
+    ? _parsed
     : DEFAULT_REMINDER_INTERVAL_HOURS;
 
   const resolvedPriority = ['p0', 'p1', 'p2'].includes(priority) ? priority : 'p1';
@@ -388,17 +391,35 @@ async function sendPendingReminders() {
           : '无截止日期';
 
         const overdueTag = isOverdue ? '⚠️ 已逾期！\n' : '';
-        const msg =
+        const assigneeMsg =
           `⏰ 催办提醒：\n\n` +
           `${overdueTag}${priorityBadge(task.priority)} 「${task.title}」\n` +
           `📅 截止：${deadlineStr}\n\n` +
           `发送「完成」标记任务已完成`;
 
-        await feishu.sendMessage(task.assignee_open_id, msg, 'open_id').catch((err) => {
+        await feishu.sendMessage(task.assignee_open_id, assigneeMsg, 'open_id').catch((err) => {
           logger.warn('Reminder: failed to DM assignee', { taskId: task.id, error: err.message });
         });
 
-        logger.info('Interval reminder sent', { taskId: task.id, title: task.title, isOverdue });
+        // Also notify reporter when task is overdue (Part 1 sends once at deadline;
+        // Part 2 follows up periodically so reporter stays informed on open P0s etc.)
+        if (isOverdue && task.reporter_open_id) {
+          const reporterMsg =
+            `📢 催办跟进提醒：\n\n` +
+            `${priorityBadge(task.priority)} 「${task.title}」\n` +
+            `📅 截止：${deadlineStr}\n` +
+            `🔴 状态：已逾期，执行人尚未完成`;
+          await feishu.sendMessage(task.reporter_open_id, reporterMsg, 'open_id').catch((err) => {
+            logger.warn('Reminder: failed to DM reporter', { taskId: task.id, error: err.message });
+          });
+        }
+
+        logger.info('Interval reminder sent', {
+          taskId: task.id,
+          title: task.title,
+          isOverdue,
+          notifiedReporter: isOverdue && !!task.reporter_open_id,
+        });
       })
     );
 

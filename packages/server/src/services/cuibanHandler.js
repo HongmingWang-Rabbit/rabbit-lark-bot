@@ -12,6 +12,13 @@ const { resolveFeatures } = require('../features');
 const reminderService = require('../services/reminder');
 const logger = require('../utils/logger');
 
+/** Mirrors reminder.js priorityBadge — kept local to avoid circular imports */
+function priorityBadge(p) {
+  if (p === 'p0') return '🔴';
+  if (p === 'p2') return '🟢';
+  return '🟡';
+}
+
 // ── helpers ─────────────────────────────────────────────────────────────────
 
 /**
@@ -120,7 +127,9 @@ async function handleCuibanCommand({ intent, text, user, senderId, openId, chatI
       const deadlineStr = t.deadline
         ? new Date(t.deadline).toLocaleDateString('zh-CN', { month: 'long', day: 'numeric' })
         : '无截止日期';
-      msg += `${i + 1}. ${t.title}\n   📅 ${deadlineStr}\n`;
+      const isOverdue = t.deadline && new Date(t.deadline) < new Date();
+      const overdueTag = isOverdue ? ' ⚠️逾期' : '';
+      msg += `${i + 1}. ${priorityBadge(t.priority)} ${t.title}\n   📅 ${deadlineStr}${overdueTag}\n`;
     });
     msg += '\n发送「完成 N」标记对应任务完成';
     await replyToChat(chatId, messageId, msg);
